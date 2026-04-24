@@ -291,7 +291,7 @@ if __name__ == '__main__':
     args = init_args()
     args.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     args.model_name = 'AFE'
-    args.num_epochs = 300
+    args.num_epochs = 1045  ##修改轮数
     config = EnvironmentConfig(args)
 
     graphs_dir = './data/home/'

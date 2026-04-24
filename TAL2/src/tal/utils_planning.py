@@ -142,6 +142,7 @@ def process_feature_with_pca(A, principal_directions=None, threshold=0.05, q_val
     if principal_directions is not None:
         if torch.is_tensor(principal_directions) and principal_directions.device != A.device:
             principal_directions = principal_directions.to(A.device)
+        principal_directions = principal_directions.to(device=A.device, dtype=A.dtype)
         ret_tensor = torch.matmul(A, principal_directions)
         ret_v = principal_directions
     else:
@@ -1444,6 +1445,8 @@ def plan_with_natural_language_instruction(
     action_names = action_effect_features['names']
     action_features = action_effect_features['features']
     action_features_tensor = torch.stack(action_features).squeeze(1)
+    if config.device is not None:
+        action_features_tensor = action_features_tensor.to(config.device)
     principal_directions = None
     if with_pca:
         action_features_tensor, principal_directions = process_feature_with_pca(

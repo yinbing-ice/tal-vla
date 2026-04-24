@@ -216,7 +216,7 @@ if __name__ == '__main__':
     args.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     args.policy_backend = 'symbolic'
     args.model_name = 'APN'
-    args.num_epochs = 800
+    args.num_epochs =   60 #####################
     config = EnvironmentConfig(args)
 
     graphs_dir = './data/home/'
