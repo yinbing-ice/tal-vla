@@ -4,7 +4,7 @@ import asyncio
 import concurrent.futures as futures
 import dataclasses
 import logging
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from etils import epath
 import jax
@@ -13,8 +13,12 @@ import orbax.checkpoint.future as future
 
 from openpi.shared import array_typing as at
 import openpi.shared.normalize as _normalize
-import openpi.training.data_loader as _data_loader
 import openpi.training.utils as training_utils
+
+if TYPE_CHECKING:
+    # 2026-05-13 修改：serve_policy 只需要 checkpoint 读写能力，不需要在模块导入阶段拉起训练数据链。
+    # 这里把 data_loader 改成仅类型检查时导入，避免推理服务因为 lerobot/video_utils/av 依赖而启动失败。
+    import openpi.training.data_loader as _data_loader
 
 
 def initialize_checkpoint_dir(

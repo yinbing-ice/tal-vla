@@ -25,6 +25,112 @@ warnings.filterwarnings('ignore')
 torch.backends.cudnn.benchmark = True
 
 
+
+def _env_flag(name, default=False):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
+def _load_node_sequences(path):
+    with open(path, 'rb') as f:
+        return pickle.load(f)
+
+
+def _dataset_graph_refs(dataset_paths):
+    refs = []
+    for dataset_path in dataset_paths:
+        for item in _load_node_sequences(dataset_path):
+            graph_path = item.get('graph_path') if isinstance(item, dict) else None
+            graph_file = item.get('graph_file') if isinstance(item, dict) else None
+            world_name = item.get('world_name') if isinstance(item, dict) else None
+            if graph_path is not None or graph_file is not None:
+                refs.append(
+                    {
+                        'dataset_path': dataset_path,
+                        'graph_path': os.path.abspath(graph_path) if graph_path is not None else None,
+                        'graph_file': graph_file,
+                        'world_name': world_name,
+                    }
+                )
+    return refs
+
+
+def _resolve_training_graph_paths(config, dataset_paths):
+    # 2026-05-12 修改：AFE 训练阶段默认沿用 Generate dataset 写入 split 的 graph_path，
+    # 使训练明确绑定到 YOLO graph（例如 world_expff/11.graph），避免旧上帝视角 graph 混入预处理。
+    refs = _dataset_graph_refs(dataset_paths)
+    graph_path_env = os.environ.get('TAL_AFE_GRAPH_PATH') or os.environ.get('TAL_DATASET_GRAPH_PATH')
+    graph_file_env = os.environ.get('TAL_AFE_GRAPH_FILE') or os.environ.get('TAL_DATASET_GRAPH_FILE')
+
+    if graph_path_env:
+        selected_paths = [
+            os.path.abspath(item.strip())
+            for item in graph_path_env.replace(',', ' ').split()
+            if item.strip()
+        ]
+    elif graph_file_env:
+        selected_paths = [
+            os.path.abspath(os.path.join('./data', config.domain, config.graph_world_name, item.strip()))
+            for item in graph_file_env.replace(',', ' ').split()
+            if item.strip()
+        ]
+    else:
+        selected_paths = sorted({ref['graph_path'] for ref in refs if ref['graph_path'] is not None})
+        if not selected_paths:
+            selected_paths = [
+                os.path.abspath(os.path.join('./data', config.domain, config.graph_world_name, '11.graph'))
+            ]
+
+    missing_paths = [graph_path for graph_path in selected_paths if not os.path.exists(graph_path)]
+    if missing_paths:
+        raise FileNotFoundError('Selected AFE graph file(s) do not exist: {}'.format(', '.join(missing_paths)))
+
+    selected_abs = set(selected_paths)
+    selected_keys = {
+        (os.path.basename(os.path.dirname(graph_path)), os.path.basename(graph_path))
+        for graph_path in selected_paths
+    }
+    for ref in refs:
+        ref_path = ref['graph_path']
+        ref_key = (ref['world_name'], ref['graph_file'])
+        if ref_path is not None and ref_path in selected_abs:
+            continue
+        if ref_key in selected_keys:
+            continue
+        raise RuntimeError(
+            'Dataset {} references {}, but selected AFE graph(s) are {}'.format(
+                ref['dataset_path'], ref_path or ref_key, ', '.join(selected_paths)
+            )
+        )
+    return selected_paths
+
+
+def _prepare_selected_graphs_dir(selected_graph_paths):
+    # 2026-05-12 修改：GraphDataset_State 会递归加载 graphs_dir 下所有 .graph。
+    # 这里在 /tmp 构造只包含选中 YOLO graph 的目录，避免训练时预处理旧 graph。
+    selected_root = os.environ.get('TAL_AFE_SELECTED_GRAPHS_DIR', '/tmp/tal_afe_selected_graphs')
+    os.makedirs(selected_root, exist_ok=True)
+    for graph_path in selected_graph_paths:
+        world_name = os.path.basename(os.path.dirname(graph_path))
+        graph_file = os.path.basename(graph_path)
+        dest_dir = os.path.join(selected_root, world_name)
+        os.makedirs(dest_dir, exist_ok=True)
+        dest_path = os.path.join(dest_dir, graph_file)
+        if os.path.lexists(dest_path):
+            if os.path.realpath(dest_path) == os.path.realpath(graph_path):
+                continue
+            if os.path.isdir(dest_path) and not os.path.islink(dest_path):
+                raise RuntimeError('Cannot replace selected graph directory: {}'.format(dest_path))
+            os.remove(dest_path)
+        try:
+            os.symlink(graph_path, dest_path)
+        except OSError:
+            import shutil
+            shutil.copy2(graph_path, dest_path)
+    return selected_root
+
 def resolve_resume_checkpoint(config, model_name, seq_prefix=''):
     """Prefer an explicit stable checkpoint, otherwise resume from the latest epoch file."""
     model_dir = config.MODEL_SAVE_PATH
@@ -144,12 +250,16 @@ def _triplet_collate(batch):
 
 
 def _build_loader(dataset, batch_size, shuffle, num_workers, collate_fn):
+    # 2026-05-12 修改：Isaac Sim Python + DGL graph batch 在 pin_memory=True 时容易触发
+    # DataLoader 共享内存/mmap 不足，导致 Pin memory thread exited unexpectedly。
+    # 默认关闭 pin memory；如确实需要，可设置 TAL_AFE_PIN_MEMORY=1。
+    pin_memory = torch.cuda.is_available() and _env_flag('TAL_AFE_PIN_MEMORY', False)
     loader_kwargs = {
         'batch_size': batch_size,
         'shuffle': shuffle,
         'num_workers': max(num_workers, 0),
         'collate_fn': collate_fn,
-        'pin_memory': torch.cuda.is_available(),
+        'pin_memory': pin_memory,
     }
     if loader_kwargs['num_workers'] > 0:
         loader_kwargs['persistent_workers'] = True
@@ -294,11 +404,14 @@ if __name__ == '__main__':
     args.num_epochs = 1045  ##修改轮数
     config = EnvironmentConfig(args)
 
-    graphs_dir = './data/home/'
     train_data_path = './data/train_dataset.pkl'
-    train_sequence_dataset = GraphDataset_State(config, graphs_dir, train_data_path)
-
     val_data_path = './data/val_dataset.pkl'
+    selected_graph_paths = _resolve_training_graph_paths(config, [train_data_path, val_data_path])
+    graphs_dir = _prepare_selected_graphs_dir(selected_graph_paths)
+    print('AFE selected graph(s): {}'.format(', '.join(selected_graph_paths)))
+    print('AFE graph loader dir: {}'.format(graphs_dir))
+
+    train_sequence_dataset = GraphDataset_State(config, graphs_dir, train_data_path)
     val_dataset = GraphDataset_State(config, graphs_dir, val_data_path)
 
 
@@ -327,6 +440,7 @@ if __name__ == '__main__':
     accum_steps = int(os.environ.get('TAL_AFE_ACCUM_STEPS', '1'))
     print('AFE batch size: {}'.format(batch_size))
     print('AFE loader workers: {}'.format(num_workers))
+    print('AFE pin memory: {}'.format(_env_flag('TAL_AFE_PIN_MEMORY', False)))
     print('AFE gradient accumulation steps: {}'.format(accum_steps))
 
     pair_loader = _build_loader(
@@ -348,11 +462,17 @@ if __name__ == '__main__':
     seqTool = 'Seq_' if config.training == 'gcn_seq' else ''
 
     lr = 1e-4
-    resume_ckpt = resolve_resume_checkpoint(config, model.name, seq_prefix=seqTool)
-    if resume_ckpt is not None:
-        print('Resuming AFE training from latest checkpoint: {}'.format(resume_ckpt))
+    # 2026-05-12 修改：YOLO/sim2real 数据与旧上帝视角数据分布不同；
+    # 设置 TAL_AFE_FRESH_START=1 时忽略旧 checkpoint，从头训练新的 AFE。
+    if _env_flag('TAL_AFE_FRESH_START', False):
+        resume_ckpt = None
+        print('TAL_AFE_FRESH_START=1, training AFE from scratch.')
     else:
-        print('No existing AFE checkpoint found. Training will start from scratch.')
+        resume_ckpt = resolve_resume_checkpoint(config, model.name, seq_prefix=seqTool)
+        if resume_ckpt is not None:
+            print('Resuming AFE training from latest checkpoint: {}'.format(resume_ckpt))
+        else:
+            print('No existing AFE checkpoint found. Training will start from scratch.')
     model, optimizer, epoch, accuracy_list = load_model(
         config,
         seqTool + model.name + '_Trained',

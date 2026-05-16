@@ -92,6 +92,8 @@ def generate_A_all(config):
 
     # * Select an action.
     env.start(config)
+    # 2026-05-10 修改：A_all 只负责验证高层动作是否可执行，不生成训练用状态特征。
+    # 因此这里的 saveState 继续保留 Isaac 真值，仅用于 restoreState 回滚仿真；真正的 YOLO 坐标替换在 exploration.py 写 graph 时完成。
     state_id, previous_constraints = env.saveState()
     env.initRootNode()  # * Add 'End' to the datapoint, use 'End' as node final state.
     previous_state_datapoint = env.getDatapoint(config, RESET_DATAPOINT=True)

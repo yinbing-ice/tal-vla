@@ -51,6 +51,7 @@ from pxr import Usd, UsdGeom
 # 第三步：导入本地自定义模块
 # ==============================================================================
 from src.envs.datapoint import Datapoint
+from src.envs.perception_state import apply_yolo_observation_to_datapoint
 
 
 sim = None
@@ -82,6 +83,17 @@ def _ensure_sim():
 
 
 def _step(render=None, steps=1):
+    skip_step_env = os.environ.get("TAL_ISAAC_SKIP_SIM_STEP", "0").lower()
+    if skip_step_env in {"1", "true", "yes", "on"}:
+        # 2026-05-11 修改：YOLO/Replicator 抓图后 Isaac 的 sim.step 偶发卡住。
+        # 当前 TAL 符号后端主要通过 set_world_pose 直接更新物体位姿，探索阶段可只刷新 USD stage，
+        # 避免 moveTo/pick 等高层动作卡在物理步进里。
+        try:
+            update_stage()
+        except Exception:
+            pass
+        return
+
     sim_ctx = _ensure_sim()
     should_render = (not _headless) if render is None else render
     for _ in range(steps):
@@ -581,6 +593,22 @@ def getDatapoint(config, RESET_DATAPOINT=False):
     if RESET_DATAPOINT:
         resetDatapoint(config)
     return tmp_dp
+
+
+def getObservedDatapoint(config, RESET_DATAPOINT=False):
+    # 2026-05-13 修改：在线 TAL 重规划阶段需要和 YOLO 版训练图保持一致，
+    # 因此这里提供统一接口，把 Isaac 真值 datapoint 转成“YOLO 观测 datapoint”后再返回。
+    # 回滚和物理世界恢复仍然使用真值状态，不受这里影响。
+    tmp_dp = datapoint.deepcopy()
+    observed_dp = apply_yolo_observation_to_datapoint(
+        config,
+        tmp_dp,
+        true_metrics=deepcopy(metrics),
+        constraints=deepcopy(constraints),
+    )
+    if RESET_DATAPOINT:
+        resetDatapoint(config)
+    return observed_dp
 
 
 def resetDatapoint(config, previous_state_datapoint=None):

@@ -25,6 +25,132 @@ warnings.filterwarnings('ignore')
 torch.backends.cudnn.benchmark = True
 
 
+def _env_flag(name, default=False):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
+def _load_node_sequences(path):
+    with open(path, 'rb') as f:
+        return pickle.load(f)
+
+
+def _dataset_graph_refs(dataset_paths):
+    refs = []
+    for dataset_path in dataset_paths:
+        for item in _load_node_sequences(dataset_path):
+            graph_path = item.get('graph_path') if isinstance(item, dict) else None
+            graph_file = item.get('graph_file') if isinstance(item, dict) else None
+            world_name = item.get('world_name') if isinstance(item, dict) else None
+            if graph_path is not None or graph_file is not None:
+                refs.append(
+                    {
+                        'dataset_path': dataset_path,
+                        'graph_path': os.path.abspath(graph_path) if graph_path is not None else None,
+                        'graph_file': graph_file,
+                        'world_name': world_name,
+                    }
+                )
+    return refs
+
+
+def _resolve_training_graph_paths(config, dataset_paths):
+    # 2026-05-12 修改：APN 训练必须和前面的 YOLO exploration/dataset/AFE 使用同一份 graph。
+    # 默认读取 split 中记录的 graph_path；也可通过 TAL_APN_GRAPH_FILE/TAL_APN_GRAPH_PATH 指定。
+    refs = _dataset_graph_refs(dataset_paths)
+    graph_path_env = (
+        os.environ.get('TAL_APN_GRAPH_PATH')
+        or os.environ.get('TAL_AFE_GRAPH_PATH')
+        or os.environ.get('TAL_DATASET_GRAPH_PATH')
+    )
+    graph_file_env = (
+        os.environ.get('TAL_APN_GRAPH_FILE')
+        or os.environ.get('TAL_AFE_GRAPH_FILE')
+        or os.environ.get('TAL_DATASET_GRAPH_FILE')
+    )
+
+    if graph_path_env:
+        selected_paths = [
+            os.path.abspath(item.strip())
+            for item in graph_path_env.replace(',', ' ').split()
+            if item.strip()
+        ]
+    elif graph_file_env:
+        selected_paths = [
+            os.path.abspath(os.path.join('./data', config.domain, config.graph_world_name, item.strip()))
+            for item in graph_file_env.replace(',', ' ').split()
+            if item.strip()
+        ]
+    else:
+        selected_paths = sorted({ref['graph_path'] for ref in refs if ref['graph_path'] is not None})
+        if not selected_paths:
+            selected_paths = [
+                os.path.abspath(os.path.join('./data', config.domain, config.graph_world_name, '11.graph'))
+            ]
+
+    missing_paths = [graph_path for graph_path in selected_paths if not os.path.exists(graph_path)]
+    if missing_paths:
+        raise FileNotFoundError('Selected APN graph file(s) do not exist: {}'.format(', '.join(missing_paths)))
+
+    selected_abs = set(selected_paths)
+    selected_keys = {
+        (os.path.basename(os.path.dirname(graph_path)), os.path.basename(graph_path))
+        for graph_path in selected_paths
+    }
+    for ref in refs:
+        ref_path = ref['graph_path']
+        ref_key = (ref['world_name'], ref['graph_file'])
+        if ref_path is not None and ref_path in selected_abs:
+            continue
+        if ref_key in selected_keys:
+            continue
+        raise RuntimeError(
+            'Dataset {} references {}, but selected APN graph(s) are {}'.format(
+                ref['dataset_path'], ref_path or ref_key, ', '.join(selected_paths)
+            )
+        )
+    return selected_paths
+
+
+def _prepare_selected_graphs_dir(selected_graph_paths):
+    # 2026-05-12 修改：GraphDataset_State 会递归加载 graphs_dir 下所有 .graph。
+    # 这里在 /tmp 构造只包含选中 YOLO graph 的目录，避免 APN 训练混入旧上帝视角 graph。
+    selected_root = os.environ.get('TAL_APN_SELECTED_GRAPHS_DIR', '/tmp/tal_apn_selected_graphs')
+    os.makedirs(selected_root, exist_ok=True)
+    for graph_path in selected_graph_paths:
+        world_name = os.path.basename(os.path.dirname(graph_path))
+        graph_file = os.path.basename(graph_path)
+        dest_dir = os.path.join(selected_root, world_name)
+        os.makedirs(dest_dir, exist_ok=True)
+        dest_path = os.path.join(dest_dir, graph_file)
+        if os.path.lexists(dest_path):
+            if os.path.realpath(dest_path) == os.path.realpath(graph_path):
+                continue
+            if os.path.isdir(dest_path) and not os.path.islink(dest_path):
+                raise RuntimeError('Cannot replace selected graph directory: {}'.format(dest_path))
+            os.remove(dest_path)
+        try:
+            os.symlink(graph_path, dest_path)
+        except OSError:
+            import shutil
+            shutil.copy2(graph_path, dest_path)
+    return selected_root
+
+
+def _resolve_resume_checkpoint(config, model_name, seq_prefix=''):
+    # 2026-05-12 修改：支持 APN 从最新 checkpoint 续训，也支持 TAL_APN_FRESH_START=1 从头训。
+    if _env_flag('TAL_APN_FRESH_START', False):
+        return None
+
+    model_dir = config.MODEL_SAVE_PATH
+    stable_ckpt = os.path.join(model_dir, f'{seq_prefix}{model_name}_Trained.ckpt')
+    if os.path.exists(stable_ckpt):
+        return stable_ckpt
+    return None
+
+
 def _move_graph_to_device(graph, device):
     return graph.to(device) if device is not None else graph
 
@@ -103,12 +229,15 @@ def _pair_collate(batch):
 
 
 def _build_loader(dataset, batch_size, shuffle, num_workers):
+    # 2026-05-12 修改：Isaac Sim Python + DGL batch 开 pin_memory 容易触发共享内存/mmap 不足。
+    # 默认关闭；如确实需要，可设置 TAL_APN_PIN_MEMORY=1。
+    pin_memory = torch.cuda.is_available() and _env_flag('TAL_APN_PIN_MEMORY', False)
     loader_kwargs = {
         'batch_size': batch_size,
         'shuffle': shuffle,
         'num_workers': max(num_workers, 0),
         'collate_fn': _pair_collate,
-        'pin_memory': torch.cuda.is_available(),
+        'pin_memory': pin_memory,
     }
     if loader_kwargs['num_workers'] > 0:
         loader_kwargs['persistent_workers'] = True
@@ -219,11 +348,14 @@ if __name__ == '__main__':
     args.num_epochs =   60 #####################
     config = EnvironmentConfig(args)
 
-    graphs_dir = './data/home/'
     train_data_path = './data/train_dataset.pkl'
-    train_sequence_dataset = GraphDataset_State(config, graphs_dir, train_data_path)
-
     val_data_path = './data/val_dataset.pkl'
+    selected_graph_paths = _resolve_training_graph_paths(config, [train_data_path, val_data_path])
+    graphs_dir = _prepare_selected_graphs_dir(selected_graph_paths)
+    print('APN selected graph(s): {}'.format(', '.join(selected_graph_paths)))
+    print('APN graph loader dir: {}'.format(graphs_dir))
+
+    train_sequence_dataset = GraphDataset_State(config, graphs_dir, train_data_path)
     val_dataset = GraphDataset_State(config, graphs_dir, val_data_path)
 
     train_data_num = len(train_sequence_dataset)
@@ -246,6 +378,7 @@ if __name__ == '__main__':
     accum_steps = int(os.environ.get('TAL_APN_ACCUM_STEPS', '1'))
     print('APN batch size: {}'.format(batch_size))
     print('APN loader workers: {}'.format(num_workers))
+    print('APN pin memory: {}'.format(_env_flag('TAL_APN_PIN_MEMORY', False)))
     print('APN gradient accumulation steps: {}'.format(accum_steps))
 
     train_loader = _build_loader(
@@ -258,8 +391,16 @@ if __name__ == '__main__':
     model = get_model(config, config.model_name, config.features_dim, config.num_objects)
     seqTool = 'Seq_' if config.training == 'gcn_seq' else ''
     lr = 5e-4
+    resume_ckpt = _resolve_resume_checkpoint(config, model.name, seq_prefix=seqTool)
+    if resume_ckpt is None:
+        if _env_flag('TAL_APN_FRESH_START', False):
+            print('TAL_APN_FRESH_START=1, training APN from scratch.')
+        else:
+            print('No existing APN checkpoint found. Training will start from scratch.')
+    else:
+        print('Resuming APN training from checkpoint: {}'.format(resume_ckpt))
     model, optimizer, epoch, accuracy_list = load_model(
-        config, seqTool + model.name + '_Trained', model, lr=lr
+        config, seqTool + model.name + '_Trained', model, file_path=resume_ckpt, lr=lr
     )
     model = model.to(config.device)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=40, gamma=0.9)

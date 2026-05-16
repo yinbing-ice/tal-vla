@@ -2,7 +2,7 @@
 @File             : generate_and_split_dataset.py
 @Project          : TAL
 @Time             : 2021/11/22 9:00
-@Author           : Xianqi ZHANG
+@Author           : Xianqi ZHANG 
 @Last Modify Time : 2024/02/29
 @Desciption       : None
 """
@@ -16,7 +16,7 @@ from termcolor import cprint
 from collections import deque
 from src.config.config import init_args
 from src.envs.CONSTANTS import EnvironmentConfig
-from src.utils.graph import generate_node_list_from_graphs
+from src.utils.graph import generate_node_list_from_graph, generate_node_list_from_graphs
 
 colorama.init()
 warnings.filterwarnings('ignore')
@@ -41,7 +41,38 @@ def calculate_actions(config, dataset, action_list):
     return action_list
 
 
-def _load_graphs(graphs_dir):
+def _resolve_selected_graph_paths(graphs_dir):
+    # 2026-05-12 修改：默认只使用本次 YOLO exploration 生成的 world_expff/11.graph，
+    # 避免旧的上帝视角 graph 混入 Generate dataset 阶段。
+    # 如需更换 graph，可设置 TAL_DATASET_GRAPH_FILE=12.graph 或 TAL_DATASET_GRAPH_PATH=/abs/path/to/x.graph。
+    graph_path_env = os.environ.get("TAL_DATASET_GRAPH_PATH", "").strip()
+    graph_file_env = os.environ.get("TAL_DATASET_GRAPH_FILE", "11.graph").strip()
+
+    selected_paths = []
+    if graph_path_env:
+        raw_paths = [item.strip() for item in graph_path_env.replace(",", " ").split() if item.strip()]
+        selected_paths = [os.path.abspath(path) for path in raw_paths]
+    elif graph_file_env:
+        raw_files = [item.strip() for item in graph_file_env.replace(",", " ").split() if item.strip()]
+        selected_paths = [
+            os.path.abspath(os.path.join(graphs_dir, graph_file))
+            for graph_file in raw_files
+        ]
+
+    missing_paths = [path for path in selected_paths if not os.path.exists(path)]
+    if missing_paths:
+        raise FileNotFoundError(
+            "Selected graph file(s) do not exist: {}".format(", ".join(missing_paths))
+        )
+    return selected_paths
+
+
+def _load_graphs(graphs_dir, selected_graph_paths=None):
+    selected_set = None
+    if selected_graph_paths is not None and len(selected_graph_paths) > 0:
+        # 2026-05-12 修改：action 统计阶段也只加载选中的 graph，保持与数据集切分来源一致。
+        selected_set = set(os.path.abspath(path) for path in selected_graph_paths)
+
     graphs_by_path = {}
     graphs_by_key = {}
     graphs_by_world = {}
@@ -56,6 +87,8 @@ def _load_graphs(graphs_dir):
             continue
         for graph_file in graph_files:
             graph_path = os.path.abspath(os.path.join(world_dir, graph_file))
+            if selected_set is not None and graph_path not in selected_set:
+                continue
             with open(graph_path, 'rb') as f:
                 dg = pickle.load(f)
             graphs_by_path[graph_path] = dg
@@ -128,18 +161,36 @@ if __name__ == '__main__':
     # args.world = 'src/envs/jsons/home_worlds/world_home1.json'
     config = EnvironmentConfig(args)
 
-    # * Generate data from all graphs.
+    # * Generate data from selected graph(s).
     graphs_dir = 'data/{}/{}/'.format(config.domain, config.graph_world_name)
+    selected_graph_paths = _resolve_selected_graph_paths(graphs_dir)
     min_sequence_length = 2  # * Three node (2 actions). Remove only 1 step.
     max_sequence_length = 11
-    node_sequences = generate_node_list_from_graphs(
-        config,
-        graphs_dir,
-        max_sequence_length=max_sequence_length,
-        start_index=0,
-        check_json=True,
-        STATE_FORMAT_GOAL=True
-    )
+    if selected_graph_paths:
+        # 2026-05-12 修改：针对新生成的 YOLO graph 逐个生成 node sequence；
+        # item 中会保留 graph_path/graph_file，后续训练数据读取时能精确定位来源 graph。
+        node_sequences = []
+        for graph_path in selected_graph_paths:
+            cprint('Using selected graph: {}'.format(graph_path), 'green')
+            node_sequences.extend(
+                generate_node_list_from_graph(
+                    config,
+                    graph_path,
+                    max_sequence_length=max_sequence_length,
+                    start_index=0,
+                    check_json=True,
+                    STATE_FORMAT_GOAL=True
+                )
+            )
+    else:
+        node_sequences = generate_node_list_from_graphs(
+            config,
+            graphs_dir,
+            max_sequence_length=max_sequence_length,
+            start_index=0,
+            check_json=True,
+            STATE_FORMAT_GOAL=True
+        )
     node_sequences = [
         item for item in node_sequences
         if len(item['nodes']) >= min_sequence_length and len(item['nodes']) <= max_sequence_length
@@ -218,7 +269,7 @@ if __name__ == '__main__':
 
     # * ----------------------------------------------------------------
     # * Check actions in data with a lightweight graph reader.
-    graphs = _load_graphs('./data/{}/'.format(config.domain))
+    graphs = _load_graphs('./data/{}/'.format(config.domain), selected_graph_paths)
 
     print('Training data:')
     action_list_train = calculate_actions_from_node_sequences(graphs, train_data)

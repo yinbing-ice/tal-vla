@@ -295,7 +295,10 @@ class TALSceneGraphProvider:
         isaac_env.update_metrics()
         isaac_env.resetDatapoint(self._runtime.sim_env_config)
         isaac_env.initRootNode()
-        return isaac_env.getDatapoint(self._runtime.sim_env_config)
+        # 2026-05-13 修改：在线 TAL 当前场景图不再直接读取 Isaac 上帝视角 datapoint，
+        # 而是先生成真值 datapoint，再统一转换成 YOLO 观测版 datapoint。
+        # 这样运行时重规划与 exploration / AFE / APN 的训练数据口径保持一致。
+        return isaac_env.getObservedDatapoint(self._runtime.sim_env_config)
 
     def get_current_scene_graph(
         self,
@@ -310,7 +313,7 @@ class TALSceneGraphProvider:
             datapoint = self._refresh_live_datapoint()
         else:
             self._runtime.isaac_env.update_metrics()
-            datapoint = self._runtime.isaac_env.getDatapoint(self._runtime.sim_env_config)
+            datapoint = self._runtime.isaac_env.getObservedDatapoint(self._runtime.sim_env_config)
 
         scene_graph = self._runtime.scene_graph_translator.datapoint_to_scene_graph_json(
             self._runtime.sim_env_config,
