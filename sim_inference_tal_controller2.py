@@ -56,6 +56,224 @@ JOINT_NAMES_IN_ORDER = [
 ]
 
 
+def _should_move_robot_root() -> bool:
+    raw = os.environ.get("TAL_ONLINE_MOVE_ROBOT_ROOT")
+    if raw is None:
+        return False
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
+def _reinitialize_robot_if_possible(robot: Any) -> None:
+    # 2026-05-18 修改：在部分 Isaac 版本里，articulation 在 reset 或根节点位姿改动后，
+    # 低层控制器句柄可能需要重新初始化/后处理一次，否则后续 apply_action 看起来像“没生效”。
+    if hasattr(robot, "initialize"):
+        try:
+            robot.initialize()
+        except Exception:
+            pass
+    if hasattr(robot, "post_reset"):
+        try:
+            robot.post_reset()
+        except Exception:
+            pass
+
+
+def _initialize_robot_handles_if_needed(robot: Any, world: Any, *, headless: bool) -> None:
+    # 2026-05-18 修改：在线闭环里默认优先“保住当前姿态”，
+    # 因此先做更长一点的非 reset 句柄等待，不再默认一上来就走 reset fallback。
+    init_steps = max(int(os.environ.get("TAL_ONLINE_ARTICULATION_INIT_STEPS", "30")), 1)
+    for _ in range(init_steps):
+        world.step(render=not headless)
+        time.sleep(0.02)
+        if hasattr(robot, "initialize"):
+            try:
+                robot.initialize()
+            except Exception:
+                pass
+        dof_names = getattr(robot, "dof_names", None)
+        if dof_names is not None:
+            return
+
+    # 2026-05-18 修改：只有显式允许时才启用 reset 兜底，
+    # 避免为了拿句柄把用户手动摆好的机械臂/夹爪姿态重置掉，表现成“突然僵直”。
+    if not _allow_reset_fallback():
+        raise RuntimeError(
+            "Articulation handle is still not ready after non-reset initialization; "
+            "set TAL_ONLINE_ALLOW_RESET_FALLBACK=1 only if you accept a reset fallback."
+        )
+
+    print("[InitRobot] non-reset initialization failed; using reset fallback", flush=True)
+    world.reset()
+    for _ in range(init_steps):
+        world.step(render=not headless)
+        time.sleep(0.02)
+        if hasattr(robot, "initialize"):
+            try:
+                robot.initialize()
+            except Exception:
+                pass
+        dof_names = getattr(robot, "dof_names", None)
+        if dof_names is not None:
+            return
+
+    raise RuntimeError("Articulation handle is still not ready even after reset fallback")
+
+
+def _should_warmup_robot() -> bool:
+    raw = os.environ.get("TAL_ONLINE_WARMUP_ROBOT")
+    if raw is None:
+        return False
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
+def _should_reset_world() -> bool:
+    raw = os.environ.get("TAL_ONLINE_RESET_WORLD")
+    if raw is None:
+        return False
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
+def _should_reinitialize_robot() -> bool:
+    raw = os.environ.get("TAL_ONLINE_REINITIALIZE_ROBOT")
+    if raw is None:
+        return False
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
+def _allow_reset_fallback() -> bool:
+    raw = os.environ.get("TAL_ONLINE_ALLOW_RESET_FALLBACK")
+    if raw is None:
+        return False
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
+def _get_initial_robot_state() -> np.ndarray:
+    raw = os.environ.get("TAL_ONLINE_INITIAL_STATE", "").strip()
+    if not raw:
+        return TRAIN_INIT_STATE.copy()
+    values = [float(item) for item in raw.replace(",", " ").split()]
+    if len(values) != len(JOINT_NAMES_IN_ORDER):
+        raise ValueError(
+            f"TAL_ONLINE_INITIAL_STATE expects {len(JOINT_NAMES_IN_ORDER)} values, got {len(values)}"
+        )
+    return np.asarray(values, dtype=np.float32)
+
+
+def _capture_current_robot_pose_from_stage(robot_prim_path: str) -> tuple[np.ndarray | None, np.ndarray | None]:
+    # 2026-05-18 修改：当 articulation 句柄还没 ready 时，直接从 live stage 的 joint prim 读取当前关节值，
+    # 用来保存用户在 GUI 里手动摆好的预抓取姿态。这样即使后面为了拿句柄走 reset fallback，也有机会把姿态恢复回来。
+    try:
+        import omni.usd  # type: ignore
+    except Exception:
+        return None, None
+
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        return None, None
+
+    def _find_joint_prim(joint_name: str) -> Any | None:
+        candidate_paths = [
+            f"{robot_prim_path}/firefighter/joints/{joint_name}",
+            f"{robot_prim_path}/joints/{joint_name}",
+        ]
+        for prim_path in candidate_paths:
+            prim = stage.GetPrimAtPath(prim_path)
+            if prim and prim.IsValid():
+                return prim
+        for prim in stage.Traverse():
+            try:
+                prim_path = str(prim.GetPath())
+                prim_name = prim.GetName()
+            except Exception:
+                continue
+            if prim_name == joint_name and prim_path.startswith(robot_prim_path):
+                return prim
+        return None
+
+    def _read_joint_value(prim: Any) -> float | None:
+        attr_names = [
+            "drive:angular:physics:targetPosition",
+            "state:angular:physics:position",
+            "drive:linear:physics:targetPosition",
+            "state:linear:physics:position",
+        ]
+        for attr_name in attr_names:
+            try:
+                attr = prim.GetAttribute(attr_name)
+            except Exception:
+                attr = None
+            if not attr:
+                continue
+            try:
+                value = attr.Get()
+            except Exception:
+                value = None
+            if value is None:
+                continue
+            try:
+                return float(value)
+            except Exception:
+                continue
+        return None
+
+    ordered = []
+    for name in JOINT_NAMES_IN_ORDER:
+        prim = _find_joint_prim(name)
+        if prim is None:
+            return None, None
+        value = _read_joint_value(prim)
+        if value is None:
+            return None, None
+        ordered.append(value)
+
+    return np.asarray(ordered, dtype=np.float32), None
+
+
+def _capture_current_robot_pose(robot: Any, robot_prim_path: str) -> tuple[np.ndarray | None, np.ndarray | None]:
+    try:
+        dof_names = getattr(robot, "dof_names", None)
+        joint_pos = robot.get_joint_positions() if hasattr(robot, "get_joint_positions") else None
+    except Exception:
+        dof_names = None
+        joint_pos = None
+    if dof_names is None or joint_pos is None:
+        return _capture_current_robot_pose_from_stage(robot_prim_path)
+    ordered = []
+    target_indices = []
+    for name in JOINT_NAMES_IN_ORDER:
+        if name not in dof_names:
+            return _capture_current_robot_pose_from_stage(robot_prim_path)
+        idx = dof_names.index(name)
+        target_indices.append(idx)
+        ordered.append(joint_pos[idx])
+    return np.asarray(ordered, dtype=np.float32), np.asarray(target_indices, dtype=np.int32)
+
+
+def _restore_robot_pose_if_available(robot: Any, world: Any, pose_state: np.ndarray | None, pose_indices: np.ndarray | None, ArticulationAction: Any, *, headless: bool) -> None:
+    if pose_state is None:
+        return
+    if pose_indices is None:
+        dof_names = getattr(robot, "dof_names", None)
+        if dof_names is None:
+            return
+        remapped_indices = []
+        for name in JOINT_NAMES_IN_ORDER:
+            if name not in dof_names:
+                return
+            remapped_indices.append(dof_names.index(name))
+        pose_indices = np.asarray(remapped_indices, dtype=np.int32)
+    # 2026-05-18 修改：句柄初始化/兜底 reset 之后，把用户在场景里已经摆好的机械臂/夹爪姿态恢复回去，
+    # 避免脚本进入 TAL + OpenPI 主循环前就把预抓取姿态“拉直/打掉”。
+    restore_steps = max(int(os.environ.get("TAL_ONLINE_RESTORE_POSE_STEPS", "60")), 1)
+    restore_action = ArticulationAction(
+        joint_positions=np.asarray(pose_state, dtype=np.float32),
+        joint_indices=np.asarray(pose_indices, dtype=np.int32),
+    )
+    for _ in range(restore_steps):
+        robot.apply_action(restore_action)
+        world.step(render=not headless)
+
+
 @dataclasses.dataclass
 class TALPlanResult:
     status: str
@@ -290,30 +508,32 @@ class TALSceneGraphProvider:
     def __init__(self, runtime_ctx: TALRuntimeContext):
         self._runtime = runtime_ctx
 
-    def _refresh_live_datapoint(self) -> Any:
+    def _refresh_live_datapoint(self, image_rgb: np.ndarray | None = None) -> Any:
         isaac_env = self._runtime.isaac_env
         isaac_env.update_metrics()
-        isaac_env.resetDatapoint(self._runtime.sim_env_config)
-        isaac_env.initRootNode()
-        # 2026-05-13 修改：在线 TAL 当前场景图不再直接读取 Isaac 上帝视角 datapoint，
-        # 而是先生成真值 datapoint，再统一转换成 YOLO 观测版 datapoint。
-        # 这样运行时重规划与 exploration / AFE / APN 的训练数据口径保持一致。
-        return isaac_env.getObservedDatapoint(self._runtime.sim_env_config)
+        # 2026-05-18 修改：在线控制阶段这里只读取当前仿真状态，不再像 exploration 那样
+        # 反复 resetDatapoint/initRootNode 重建新的轨迹起点。
+        # 同时优先复用主控制循环已经采集到的 cam_high 图像做 YOLO，避免重规划再触发一次相机读取。
+        return isaac_env.getObservedDatapoint(self._runtime.sim_env_config, image_rgb=image_rgb)
 
     def get_current_scene_graph(
         self,
         *,
         state_name: str | None = None,
         manual_scene_graph: dict[str, Any] | None = None,
+        image_rgb: np.ndarray | None = None,
     ) -> tuple[dict[str, Any], Any | None]:
         if manual_scene_graph is not None:
             return manual_scene_graph, None
 
         if state_name is None:
-            datapoint = self._refresh_live_datapoint()
+            datapoint = self._refresh_live_datapoint(image_rgb=image_rgb)
         else:
             self._runtime.isaac_env.update_metrics()
-            datapoint = self._runtime.isaac_env.getObservedDatapoint(self._runtime.sim_env_config)
+            datapoint = self._runtime.isaac_env.getObservedDatapoint(
+                self._runtime.sim_env_config,
+                image_rgb=image_rgb,
+            )
 
         scene_graph = self._runtime.scene_graph_translator.datapoint_to_scene_graph_json(
             self._runtime.sim_env_config,
@@ -383,20 +603,51 @@ def load_manual_scene_graph(path_str: str) -> dict[str, Any] | None:
         return json.load(file_obj)
 
 
-def capture_rgb_images(cam_high: Any, cam_wrist: Any) -> dict[str, np.ndarray]:
-    img_high_rgba = cam_high.get_rgba()[:, :, :3]
-    img_wrist_rgba = cam_wrist.get_rgba()[:, :, :3]
-
-    if img_high_rgba.dtype == np.float32:
-        img_high_rgb = (img_high_rgba * 255).astype(np.uint8)
-        img_wrist_rgb = (img_wrist_rgba * 255).astype(np.uint8)
+def _try_read_camera_rgb(camera: Any) -> np.ndarray | None:
+    image = camera.get_rgba()
+    image = np.asarray(image) if image is not None else None
+    if image is None or image.size == 0 or image.ndim != 3 or image.shape[2] < 3:
+        return None
+    rgb = image[:, :, :3]
+    if rgb.dtype == np.float32:
+        rgb = np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
     else:
-        img_high_rgb = img_high_rgba
-        img_wrist_rgb = img_wrist_rgba
+        rgb = rgb.astype(np.uint8, copy=False)
+    return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
+
+def _read_camera_rgb(camera: Any, camera_name: str) -> np.ndarray:
+    # 2026-05-18 修改：在线控制阶段仍然只使用 get_rgba() 这一条取图路径，
+    # 但把“首帧等待”和“空帧重试”从直接崩溃改成温和等待，避免 step 0 因相机尚未出图退出。
+    retries = max(int(os.environ.get("TAL_ONLINE_CAMERA_RETRIES", "6")), 1)
+    for _ in range(retries):
+        image_bgr = _try_read_camera_rgb(camera)
+        if image_bgr is not None:
+            return image_bgr
+        time.sleep(0.02)
+    raise RuntimeError(f"Camera {camera_name} returned no valid RGBA frame after {retries} retries")
+
+
+def wait_for_camera_frames(cam_high: Any, cam_wrist: Any, world: Any, *, headless: bool) -> dict[str, np.ndarray]:
+    # 2026-05-18 修改：进入主循环前做双目预热，不再只 sleep 干等。
+    # 对 Isaac 相机来说，真正让 high / wrist 两路都产出首帧，通常需要推进几次渲染/仿真步。
+    preflight_retries = max(int(os.environ.get("TAL_ONLINE_CAMERA_PREFLIGHT_RETRIES", "120")), 1)
+    for _ in range(preflight_retries):
+        world.step(render=not headless)
+        high = _try_read_camera_rgb(cam_high)
+        wrist = _try_read_camera_rgb(cam_wrist)
+        if high is not None and wrist is not None:
+            return {"cam_high": high, "cam_wrist": wrist}
+        time.sleep(0.02)
+    raise RuntimeError(
+        f"Camera preflight failed after {preflight_retries} retries; cam_high/cam_wrist did not both produce valid frames"
+    )
+
+
+def capture_rgb_images(cam_high: Any, cam_wrist: Any) -> dict[str, np.ndarray]:
     return {
-        "cam_high": cv2.cvtColor(img_high_rgb, cv2.COLOR_RGB2BGR),
-        "cam_wrist": cv2.cvtColor(img_wrist_rgb, cv2.COLOR_RGB2BGR),
+        "cam_high": _read_camera_rgb(cam_high, "cam_high"),
+        "cam_wrist": _read_camera_rgb(cam_wrist, "cam_wrist"),
     }
 
 
@@ -429,12 +680,50 @@ def infer_action(policy_client: Any, images: dict[str, np.ndarray], state: np.nd
     return result["actions"][0]
 
 
-def apply_robot_action(robot: Any, target_action: np.ndarray, target_indices: np.ndarray, ArticulationAction: Any) -> None:
+def apply_robot_action(
+    robot: Any,
+    world: Any,
+    target_action: np.ndarray,
+    target_indices: np.ndarray,
+    ArticulationAction: Any,
+) -> None:
+    target_action = np.asarray(target_action, dtype=np.float32)
+    target_indices = np.asarray(target_indices, dtype=np.int32)
+
     action_cmd = ArticulationAction(
-        joint_positions=target_action.astype(np.float32),
-        joint_indices=target_indices.astype(np.int32),
+        joint_positions=target_action,
+        joint_indices=target_indices,
     )
-    robot.apply_action(action_cmd)
+
+    # 2026-05-18 修改：这里优先使用 articulation 的 joint position target 接口，
+    # 因为它比单次 apply_action 更像“持续保持目标”，在当前 Mobie_grasper2 上更稳定。
+    # 如果当前 Isaac 版本没有这个接口，再回退到 apply_action。
+    use_position_targets = hasattr(robot, "set_joint_position_targets")
+
+    # 2026-05-18 修改：为了排查当前机器人 articulation 偶发“不响应目标”的问题，
+    # 提供一个直接写入关节位置的调试兜底开关。
+    # 这个模式不是物理驱动，而是直接把关节 teleport 到目标值，
+    # 更适合先验证 TAL + OpenPI 闭环是否整体连通。
+    use_direct_set = os.environ.get("TAL_ONLINE_DIRECT_SET_JOINTS", "0").lower() in {"1", "true", "yes", "on"}
+    can_direct_set = hasattr(robot, "set_joint_positions")
+
+    # 2026-05-18 修改：在线 TAL + OpenPI 闭环里，只在循环末尾瞬时下发一次目标时，
+    # 会偶发出现“OpenPI 输出在变、关节状态几乎不动”的现象。
+    # 这里把同一个关节目标在几个连续子步中重复下发，并同步推进 world.step，
+    # 让控制器/drive 有足够时间真正吃进目标值。
+    control_substeps = max(int(os.environ.get("TAL_ONLINE_CONTROL_SUBSTEPS", "4")), 1)
+    for _ in range(control_substeps):
+        if use_direct_set and can_direct_set:
+            robot.set_joint_positions(target_action, joint_indices=target_indices)
+        elif use_position_targets:
+            robot.set_joint_position_targets(target_action, joint_indices=target_indices)
+        else:
+            robot.apply_action(action_cmd)
+        world.step(render=not args.headless)
+
+    if os.environ.get("TAL_ONLINE_DEBUG_CONTROL", "0").lower() in {"1", "true", "yes", "on"}:
+        post_state, _, _ = read_robot_state(robot, JOINT_NAMES_IN_ORDER)
+        print(f"[ControlDebug] target={target_action.tolist()} post_state={post_state.tolist()}")
 
 
 def smoothly_move_robot_root(
@@ -504,11 +793,12 @@ def smoothly_move_robot_root(
 
 
 def warm_up_robot(robot: Any, world: Any, target_indices: np.ndarray, ArticulationAction: Any) -> None:
+    target_state = _get_initial_robot_state()
     start_positions = robot.get_joint_positions()[target_indices]
     num_steps = 240
     for i in range(num_steps):
         alpha = (i + 1) / float(num_steps)
-        interpolated_positions = start_positions + alpha * (TRAIN_INIT_STATE - start_positions)
+        interpolated_positions = start_positions + alpha * (target_state - start_positions)
         step_action = ArticulationAction(
             joint_positions=interpolated_positions,
             joint_indices=target_indices.astype(np.int32),
@@ -517,7 +807,7 @@ def warm_up_robot(robot: Any, world: Any, target_indices: np.ndarray, Articulati
         world.step()
 
     final_action = ArticulationAction(
-        joint_positions=TRAIN_INIT_STATE,
+        joint_positions=target_state,
         joint_indices=target_indices.astype(np.int32),
     )
     for _ in range(60):
@@ -586,7 +876,24 @@ def main() -> None:
     scene_graph_provider = TALSceneGraphProvider(runtime_ctx)
     manual_scene_graph = load_manual_scene_graph(args.manual_scene_graph_json)
 
-    world.reset()
+    saved_pose_state, saved_pose_indices = _capture_current_robot_pose(robot, robot_prim_path)
+
+    # 2026-05-18 修改：在线闭环按“两阶段”处理启动逻辑：
+    # 先尽量保存场景里当前已经摆好的机械臂/夹爪姿态，再做句柄初始化，最后把姿态恢复回去。
+    # 这样既能拿到可用 articulation handle，又尽量不破坏预抓取位姿。
+    if _should_reset_world():
+        world.reset()
+    _initialize_robot_handles_if_needed(robot, world, headless=args.headless)
+    if _should_reinitialize_robot():
+        _reinitialize_robot_if_possible(robot)
+    _restore_robot_pose_if_available(
+        robot,
+        world,
+        saved_pose_state,
+        saved_pose_indices,
+        ArticulationAction,
+        headless=args.headless,
+    )
 
     sim_dof_names = robot.dof_names
     target_indices = []
@@ -597,24 +904,46 @@ def main() -> None:
             print(f"Warning: joint {name} was not found in simulation.")
     target_indices = np.array(target_indices, dtype=np.int32)
 
-    smoothly_move_robot_root(robot, world, ROBOT_START_WORLD_POSITION)
-    warm_up_robot(robot, world, target_indices, ArticulationAction)
+    # 2026-05-18 修改：默认不再主动搬动机器人根节点，先尽量保持和 sim_inference3.py 的稳定控制路径一致。
+    # 之前这里的 root move 更像是当前连续物理控制失效的高风险点；需要时可用环境变量显式打开。
+    if _should_move_robot_root():
+        smoothly_move_robot_root(robot, world, ROBOT_START_WORLD_POSITION)
+        if _should_reinitialize_robot():
+            _reinitialize_robot_if_possible(robot)
+    # 2026-05-18 修改：默认不再强制把机械臂拉回固定 TRAIN_INIT_STATE，
+    # 以免覆盖用户在启动前手动调好的初始姿态；需要时可显式设置 TAL_ONLINE_WARMUP_ROBOT=1 打开。
+    if _should_warmup_robot():
+        warm_up_robot(robot, world, target_indices, ArticulationAction)
+        if _should_reinitialize_robot():
+            _reinitialize_robot_if_possible(robot)
     print("Starting TAL(native scene graph) + OpenPI closed-loop inference...")
 
     latest_subtask = None
     latest_fused_prompt = args.prompt
+    latest_images = wait_for_camera_frames(cam_high, cam_wrist, world, headless=args.headless)
     step_idx = 0
 
     try:
         while True:
             print(f"[Loop] entering step {step_idx}")
-            world.step()
+            # 2026-05-18 修改：循环开头保留一次 world.step，用于刷新相机/仿真缓存；
+            # 真正执行关节控制的主步进已下沉到 apply_robot_action 里做连续子步。
+            world.step(render=not args.headless)
             if args.max_steps >= 0 and step_idx >= args.max_steps:
                 print("Reached max steps, exiting.")
                 break
 
             print(f"[Step {step_idx}] Capturing RGB images...")
-            images = capture_rgb_images(cam_high, cam_wrist)
+            try:
+                images = capture_rgb_images(cam_high, cam_wrist)
+                latest_images = images
+            except RuntimeError as exc:
+                # 2026-05-18 修改：主循环中若相机偶发空帧，不直接终止整条控制链，
+                # 而是复用上一帧图像继续运行，优先保证 TAL + OpenPI + 物理控制主流程稳定。
+                if latest_images is None:
+                    raise
+                print(f"[CameraWarning] {exc}; reuse previous RGB frame", flush=True)
+                images = latest_images
             print(f"[Step {step_idx}] Reading robot state...")
             current_state, _, _ = read_robot_state(robot, JOINT_NAMES_IN_ORDER)
             print(f"[Step {step_idx}] Robot state: {current_state.tolist()}")
@@ -626,11 +955,18 @@ def main() -> None:
                     f"scene_graph_state_name={scene_graph_state_name!r}, "
                     f"manual_scene_graph={'yes' if manual_scene_graph is not None else 'no'}"
                 )
+                if os.environ.get("TAL_ONLINE_DEBUG_REPLAN", "0").lower() in {"1", "true", "yes", "on"}:
+                    pre_replan_state, _, _ = read_robot_state(robot, JOINT_NAMES_IN_ORDER)
+                    print(f"[ReplanDebug] before_scene_graph state={pre_replan_state.tolist()}")
                 print(f"[Step {step_idx}] Building current scene graph from TAL runtime...")
                 current_scene_graph, current_datapoint = scene_graph_provider.get_current_scene_graph(
                     state_name=scene_graph_state_name,
                     manual_scene_graph=manual_scene_graph,
+                    image_rgb=cv2.cvtColor(images["cam_high"], cv2.COLOR_BGR2RGB),
                 )
+                if os.environ.get("TAL_ONLINE_DEBUG_REPLAN", "0").lower() in {"1", "true", "yes", "on"}:
+                    after_scene_graph_state, _, _ = read_robot_state(robot, JOINT_NAMES_IN_ORDER)
+                    print(f"[ReplanDebug] after_scene_graph state={after_scene_graph_state.tolist()}")
                 if current_datapoint is not None:
                     print(f"[Step {step_idx}] TAL datapoint actions: {list(getattr(current_datapoint, 'actions', []))}")
                 print(f"[Step {step_idx}] Calling TAL planner...")
@@ -639,6 +975,9 @@ def main() -> None:
                     current_scene_graph,
                     start_node=current_datapoint,
                 )
+                if os.environ.get("TAL_ONLINE_DEBUG_REPLAN", "0").lower() in {"1", "true", "yes", "on"}:
+                    after_planner_state, _, _ = read_robot_state(robot, JOINT_NAMES_IN_ORDER)
+                    print(f"[ReplanDebug] after_planner state={after_planner_state.tolist()}")
                 latest_subtask = tal_result.first_action_text
                 latest_fused_prompt = build_fused_prompt(args.prompt, latest_subtask)
                 print("=" * 80)
@@ -655,7 +994,7 @@ def main() -> None:
             target_action = infer_action(policy, images, current_state, latest_fused_prompt)
             print(f"[Step {step_idx}] OpenPI first action: {target_action}")
             print(f"[Step {step_idx}] Applying action to robot...")
-            apply_robot_action(robot, target_action, target_indices, ArticulationAction)
+            apply_robot_action(robot, world, target_action, target_indices, ArticulationAction)
             step_idx += 1
             time.sleep(0.02)
     except KeyboardInterrupt:

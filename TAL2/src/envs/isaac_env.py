@@ -61,6 +61,8 @@ datapoint = None
 metrics = {}
 constraints = {"husky": []}
 config_cache = None
+_logical_robot_metric = None
+_logical_robot_marker_prim = None
 _scene_summary_printed = False
 _loaded_scene_usd_path = None
 _scene_baseline_metrics = None
@@ -131,6 +133,11 @@ def _restore_metrics_snapshot(saved_metrics, saved_constraints=None):
     for tal_name, prim in object_prims.items():
         if prim.is_valid() and tal_name in saved_metrics:
             pos, rot = saved_metrics[tal_name]
+            if tal_name == "husky" and _use_logical_robot_motion():
+                # 2026-05-17 修改：restore/回滚时也只恢复小车的 TAL 逻辑坐标，
+                # 避免随机扩展 graph 节点时再次搬动 Mobie_grasper2 根节点导致 GUI 视觉体消失。
+                _set_robot_metric(pos, rot)
+                continue
             _set_world_pose(prim, np.array(pos), np.array(rot))
 
     _step(steps=2)
@@ -142,6 +149,8 @@ def _reset_runtime_state(config):
     global sticky, fixed, on, fueled, cut, cleaner, stick, clean, drilled, welded, painted
 
     metrics = {}
+    globals()["_logical_robot_metric"] = None
+    globals()["_logical_robot_marker_prim"] = None
     constraints = {"husky": []}
     sticky, fixed, on, fueled, cut = [], [], [], [], []
     cleaner, stick, clean, drilled, welded, painted = False, False, [], [], [], []
@@ -259,6 +268,10 @@ def update_metrics():
         if prim.is_valid():
             pos, rot = prim.get_world_poses()
             metrics[tal_name] = [pos[0].tolist(), rot[0].tolist()]
+    if _logical_robot_metric is not None:
+        # 2026-05-17 修改：GUI/skip-step 探索时不直接搬动 Mobie_grasper2 的 USD 根节点，
+        # 避免复杂 articulation 在 Isaac 视窗里出现视觉体消失；TAL graph 仍使用逻辑小车坐标。
+        metrics["husky"] = deepcopy(_logical_robot_metric)
     return metrics
 
 
@@ -268,6 +281,60 @@ def _set_world_pose(prim, position, orientation=None):
     if orientation is not None:
         orientations = np.asarray(orientation, dtype=np.float32).reshape(1, 4)
     prim.set_world_poses(positions=positions, orientations=orientations)
+
+
+def _show_logical_robot_marker():
+    raw = os.environ.get("TAL_ISAAC_SHOW_LOGICAL_ROBOT_MARKER")
+    if raw is None:
+        return _use_logical_robot_motion() and not _headless
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
+def _ensure_logical_robot_marker():
+    global _logical_robot_marker_prim
+    if not _show_logical_robot_marker() or stage is None:
+        return None
+    marker_path = "/World/TAL_LogicalHuskyMarker"
+    marker_usd_prim = stage.GetPrimAtPath(marker_path)
+    if not marker_usd_prim.IsValid():
+        # 2026-05-17 修改：真实 Mobie_grasper2 在 skip-step/GUI 下保持原地，
+        # 用这个红色小球显示 TAL graph 中的逻辑小车位置，便于观察 exploration 是否在移动。
+        sphere = UsdGeom.Sphere.Define(stage, marker_path)
+        sphere.GetRadiusAttr().Set(0.16)
+        sphere.GetDisplayColorAttr().Set([(1.0, 0.05, 0.02)])
+        marker_usd_prim = sphere.GetPrim()
+    if _logical_robot_marker_prim is None or not _logical_robot_marker_prim.is_valid():
+        _logical_robot_marker_prim = XFormPrim(marker_path)
+    return _logical_robot_marker_prim
+
+
+def _update_logical_robot_marker(position):
+    marker = _ensure_logical_robot_marker()
+    if marker is None:
+        return
+    marker_pos = np.asarray(position, dtype=np.float32).copy()
+    marker_pos[2] += 0.45
+    _set_world_pose(marker, marker_pos)
+    try:
+        update_stage()
+    except Exception:
+        pass
+
+
+def _use_logical_robot_motion():
+    raw = os.environ.get("TAL_ISAAC_LOGICAL_ROBOT_MOTION")
+    if raw is not None:
+        return raw.lower() in {"1", "true", "yes", "on"}
+    return os.environ.get("TAL_ISAAC_SKIP_SIM_STEP", "0").lower() in {"1", "true", "yes", "on"}
+
+
+def _set_robot_metric(position, orientation=None):
+    global _logical_robot_metric
+    if orientation is None:
+        orientation = metrics.get("husky", [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]])[1]
+    _logical_robot_metric = [list(np.asarray(position, dtype=float)), list(orientation)]
+    metrics["husky"] = deepcopy(_logical_robot_metric)
+    _update_logical_robot_marker(position)
 
 
 def _get_obj_size(config, obj_name):
@@ -293,7 +360,12 @@ def _move_robot_near(target_name, approach_distance=None):
         direction = delta / dist
         new_robot_pos[:2] = target_pos[:2] - direction * approach_distance
     new_robot_pos[2] = robot_pos[2]
-    _set_world_pose(robot_prim, new_robot_pos)
+    if _use_logical_robot_motion():
+        # 2026-05-17 修改：探索/调试时小车只更新 TAL 逻辑坐标，不移动 Isaac 里的机器人模型。
+        # 物体仍按动作结果移动，因此生成 graph 不受影响；GUI 中也能持续看到小车本体。
+        _set_robot_metric(new_robot_pos)
+    else:
+        _set_world_pose(robot_prim, new_robot_pos)
     _step()
     update_metrics()
 
@@ -405,6 +477,11 @@ def restoreState(state_id, previous_constraints, previous_state_datapoint=None):
     for tal_name, prim in object_prims.items():
         if prim.is_valid() and tal_name in saved_metrics:
             pos, rot = saved_metrics[tal_name]
+            if tal_name == "husky" and _use_logical_robot_motion():
+                # 2026-05-17 修改：restore/回滚时也只恢复小车的 TAL 逻辑坐标，
+                # 避免随机扩展 graph 节点时再次搬动 Mobie_grasper2 根节点导致 GUI 视觉体消失。
+                _set_robot_metric(pos, rot)
+                continue
             _set_world_pose(prim, np.array(pos), np.array(rot))
 
     _step(steps=2)
@@ -595,7 +672,7 @@ def getDatapoint(config, RESET_DATAPOINT=False):
     return tmp_dp
 
 
-def getObservedDatapoint(config, RESET_DATAPOINT=False):
+def getObservedDatapoint(config, RESET_DATAPOINT=False, image_rgb=None):
     # 2026-05-13 修改：在线 TAL 重规划阶段需要和 YOLO 版训练图保持一致，
     # 因此这里提供统一接口，把 Isaac 真值 datapoint 转成“YOLO 观测 datapoint”后再返回。
     # 回滚和物理世界恢复仍然使用真值状态，不受这里影响。
@@ -605,6 +682,7 @@ def getObservedDatapoint(config, RESET_DATAPOINT=False):
         tmp_dp,
         true_metrics=deepcopy(metrics),
         constraints=deepcopy(constraints),
+        image_rgb=image_rgb,
     )
     if RESET_DATAPOINT:
         resetDatapoint(config)
@@ -633,6 +711,7 @@ def destroy():
     object_prims = {}
     datapoint = None
     metrics = {}
+    globals()["_logical_robot_metric"] = None
     constraints = {"husky": []}
     config_cache = None
     _loaded_scene_usd_path = None

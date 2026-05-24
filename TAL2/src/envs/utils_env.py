@@ -578,7 +578,9 @@ def convertToDGLGraph(config, graph_data, globalNode, globalID, ignore: list = N
         for state in states:
             idx = config.state2indx[state]
             node_states[node_id, idx] = 1
-        node_vectors[node_id] = torch.tensor(node['vector'], dtype=torch.float32)
+        # 2026-05-18 修改：node['vector'] 在部分路径下已经是 tensor，
+        # 这里改用 as_tensor 避免 torch.tensor(tensor) 反复构造触发 warning。
+        node_vectors[node_id] = torch.as_tensor(node['vector'], dtype=torch.float32)
 
         tmp_orn = orientation_to_quaternion(node['position'][1])
         tmp_size_and_pos = list(node['size']) + list(node['position'][0]) + tmp_orn

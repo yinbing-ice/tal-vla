@@ -36,12 +36,17 @@ def perception_enabled():
     return os.environ.get("TAL_USE_YOLO_PERCEPTION", "1").lower() not in {"0", "false", "no", "off"}
 
 
-def apply_yolo_observation_to_datapoint(config, datapoint, true_metrics=None, constraints=None):
+def apply_yolo_observation_to_datapoint(config, datapoint, true_metrics=None, constraints=None, image_rgb=None):
     """Replace datapoint metrics with YOLO-observed positions where available."""
     if not perception_enabled():
         return datapoint
 
-    observed_metrics = get_observed_metrics(config, true_metrics=true_metrics, constraints=constraints)
+    observed_metrics = get_observed_metrics(
+        config,
+        true_metrics=true_metrics,
+        constraints=constraints,
+        image_rgb=image_rgb,
+    )
     if not observed_metrics:
         return datapoint
 
@@ -62,7 +67,7 @@ def apply_yolo_observation_to_datapoint(config, datapoint, true_metrics=None, co
     return observed_datapoint
 
 
-def get_observed_metrics(config, true_metrics=None, constraints=None):
+def get_observed_metrics(config, true_metrics=None, constraints=None, image_rgb=None):
     """Return TAL metrics using robot self-localization + YOLO object observations."""
     if true_metrics is None:
         true_metrics = {}
@@ -82,7 +87,7 @@ def get_observed_metrics(config, true_metrics=None, constraints=None):
 
     try:
         detector = _get_detector(config)
-        detections = detector.detect()
+        detections = detector.detect(image_rgb=image_rgb)
     except Exception as exc:
         # 2026-05-11 修改：感知失败会影响训练数据质量，因此 warning 默认保留；细节日志仍由 TAL_YOLO_DEBUG 控制。
         print(f"[YOLOPerception] warning: perception failed, keep fallback metrics. reason={exc}", flush=True)
@@ -161,17 +166,22 @@ class IsaacYoloCoordinateDetector:
         self.height = int(os.environ.get("TAL_YOLO_IMAGE_HEIGHT", "1024"))
         self.conf = float(os.environ.get("TAL_YOLO_CONF", "0.35"))
         self.capture_timeout_s = float(os.environ.get("TAL_YOLO_CAPTURE_TIMEOUT_S", DEFAULT_CAPTURE_TIMEOUT_S))
+        self.capture_mode = os.environ.get("TAL_YOLO_CAPTURE_MODE", "auto").strip().lower()
+        self._live_camera = None
         self.fx = self.fy = None
         self.cx = self.width / 2.0
         self.cy = self.height / 2.0
 
-    def detect(self):
+    def detect(self, image_rgb=None):
         start_time = time.monotonic()
         _yolo_debug("start detection")
         stage, camera_prim, UsdGeom = self._get_stage_camera()
         self._configure_intrinsics(camera_prim)
-        _yolo_debug("camera ready, start RGB capture")
-        image_rgb = self._capture_rgb()
+        if image_rgb is None:
+            _yolo_debug("camera ready, start RGB capture")
+            image_rgb = self._capture_rgb()
+        else:
+            _yolo_debug("reuse online control cam_high frame for YOLO detection")
         if image_rgb is None or getattr(image_rgb, "size", 0) == 0:
             raise RuntimeError("Isaac camera returned empty RGB frame")
         _yolo_debug(
@@ -219,10 +229,57 @@ class IsaacYoloCoordinateDetector:
         self.cy = self.height / 2.0
 
     def _capture_rgb(self):
-        image = self._capture_rgb_with_replicator()
-        if image is not None and getattr(image, "size", 0) != 0:
-            return np.asarray(image)
+        # 2026-05-18 修改：在线控制阶段优先读取当前 live camera 帧，避免 Replicator orchestrator.step()
+        # 额外推进仿真时间线，导致机械臂姿态在 TAL/YOLO 重规划前后发生突变。
+        if self.capture_mode in {"auto", "live_camera", "live"}:
+            image = self._capture_rgb_with_live_camera()
+            if image is not None and getattr(image, "size", 0) != 0:
+                return np.asarray(image)
+        if self.capture_mode in {"auto", "replicator", "rep"}:
+            image = self._capture_rgb_with_replicator()
+            if image is not None and getattr(image, "size", 0) != 0:
+                return np.asarray(image)
         return None
+
+    def _capture_rgb_with_live_camera(self):
+        try:
+            import omni.kit.app
+            try:
+                from isaacsim.sensors.camera import Camera
+            except ModuleNotFoundError:
+                from omni.isaac.sensor import Camera
+        except Exception:
+            return None
+
+        if self._live_camera is None:
+            try:
+                self._live_camera = Camera(prim_path=self.camera_path, resolution=(self.width, self.height))
+                self._live_camera.initialize()
+            except Exception as exc:
+                _yolo_debug(f"live camera init failed: {exc}")
+                self._live_camera = None
+                return None
+
+        app = omni.kit.app.get_app()
+        for _ in range(2):
+            app.update()
+
+        try:
+            image = self._live_camera.get_rgba()
+        except Exception as exc:
+            _yolo_debug(f"live camera get_rgba failed: {exc}")
+            return None
+
+        if image is None or getattr(image, "size", 0) == 0:
+            _yolo_debug("live camera returned empty frame")
+            return None
+
+        image = np.asarray(image)
+        _yolo_debug(
+            "Live camera frame: "
+            f"shape={getattr(image, 'shape', None)} dtype={getattr(image, 'dtype', None)} size={getattr(image, 'size', None)}"
+        )
+        return image
 
     def _capture_rgb_with_replicator(self):
         import omni.kit.app

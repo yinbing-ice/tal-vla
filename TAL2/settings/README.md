@@ -12,8 +12,15 @@ cd /root/gpufree-data/code/tal-vla/TAL2
 适配本机
 
 #cd /root/gpufree-data/code/tal-vla/TAL2
-#TAL_ISAAC_SKIP_SIM_STEP=1 \
-TAL_ISAAC_HEADLESS=1 \
+#TAL_ISAAC_SKIP_SIM_STEP=1 TAL_ISAAC_HEADLESS=0 TAL_PERCEPTION_MODE=yolo TAL_YOLO_WARMUP_STEPS=1 TAL_YOLO_CONF=0.35 TAL_EXPLORE_SKIP_PICK=0 TAL_EXPLORE_SKIP_PICKNPLACE=0 TAL_EXPLORE_SKIP_PUSHTO=0 /root/isaaclab/_isaac_sim/python.sh src/exploration.py
+进一步适配
+
+cd /root/gpufree-data/code/tal-vla/TAL2
+
+TAL_ISAAC_SKIP_SIM_STEP=1 \
+TAL_ISAAC_HEADLESS=0 \
+TAL_ISAAC_LOGICAL_ROBOT_MOTION=1 \
+TAL_ISAAC_SHOW_LOGICAL_ROBOT_MARKER=1 \
 TAL_PERCEPTION_MODE=yolo \
 TAL_YOLO_WARMUP_STEPS=1 \
 TAL_YOLO_CONF=0.35 \
@@ -21,10 +28,6 @@ TAL_EXPLORE_SKIP_PICK=0 \
 TAL_EXPLORE_SKIP_PICKNPLACE=0 \
 TAL_EXPLORE_SKIP_PUSHTO=0 \
 /root/isaaclab/_isaac_sim/python.sh src/exploration.py
-
-TAL_ISAAC_SKIP_SIM_STEP=1 TAL_ISAAC_HEADLESS=1 TAL_PERCEPTION_MODE=yolo TAL_YOLO_WARMUP_STEPS=1 TAL_YOLO_CONF=0.35 TAL_EXPLORE_SKIP_PICK=0 TAL_EXPLORE_SKIP_PICKNPLACE=0 TAL_EXPLORE_SKIP_PUSHTO=0 /root/isaaclab/_isaac_sim/python.sh src/exploration.py
-进一步适配
-
 
 Notes:
 - The Isaac Lab environment now loads `/root/Desktop/Collected_exp3/expff.usd`.
@@ -152,3 +155,26 @@ PYTHONPATH=/root/gpufree-data/code/tal-vla:/root/gpufree-data/code/tal-vla/openp
   --server-host 127.0.0.1 \
   --server-port 8000 \
   --replan-every-n-steps 300
+
+cd /isaac-sim
+
+TAL_PERCEPTION_MODE=yolo \
+TAL_YOLO_CAPTURE_MODE=live_camera \
+TAL_YOLO_WARMUP_STEPS=1 \
+TAL_YOLO_CONF=0.35 \
+TAL_ONLINE_MOVE_ROBOT_ROOT=0 \
+TAL_ONLINE_WARMUP_ROBOT=1 \
+TAL_ONLINE_CONTROL_SUBSTEPS=8 \
+TAL_ONLINE_DEBUG_CONTROL=1 \
+TAL_ONLINE_DEBUG_REPLAN=1 \
+TAL_ONLINE_CAMERA_RETRIES=10 \
+TAL_ONLINE_CAMERA_PREFLIGHT_RETRIES=120 \
+TAL_ONLINE_ALLOW_RESET_FALLBACK=1 \
+PYTHONPATH=/root/gpufree-data/code/tal-vla:/root/gpufree-data/code/tal-vla/openpi/packages/openpi-client/src \
+./python.sh /root/gpufree-data/code/tal-vla/sim_inference_tal_controller2.py \
+  --prompt "pick up the cube and put it in pallet" \
+  --tal-root /root/gpufree-data/code/tal-vla/TAL2 \
+  --server-host 127.0.0.1 \
+  --server-port 8000 \
+  --replan-every-n-steps 300
+
