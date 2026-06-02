@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<robot name="simple_robot">
+ 
+  <!-- 基础连杆 - 机器人的主体 -->
+  <link name="base_link">
+    <visual>
+      <geometry>
+        <box size="0.3 0.3 0.2"/>
+      </geometry>
+      <material name="blue">
+        <color rgba="0 0 1 0.5"/>
+      </material>
+    </visual>
+    <!-- 碰撞体积（导航用） -->
+    <collision>
+      <geometry>
+        <box size="0.3 0.3 0.2"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- 激光雷达连杆 -->
+  <link name="base_scan">
+    <visual>
+      <geometry>
+        <cylinder radius="0.03" length="0.05"/>
+      </geometry>
+      <material name="red">
+        <color rgba="1 0 0 0.5"/>
+      </material>
+    </visual>
+  </link>
+
+  <!-- 连接：激光雷达固定在机器人中心上方 -->
+  <joint name="base_scan_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="base_scan"/>
+    <origin xyz="0 0 0.1" rpy="0 0 0"/>
+  </joint>
+
+</robot>

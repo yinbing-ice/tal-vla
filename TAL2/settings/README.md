@@ -156,6 +156,10 @@ PYTHONPATH=/root/gpufree-data/code/tal-vla:/root/gpufree-data/code/tal-vla/openp
   --server-port 8000 \
   --replan-every-n-steps 300
 
+
+export DASHSCOPE_API_KEY=sk-0ad1057b021b4dd3b660a161f1835850
+sk-0ad1057b021b4dd3b660a161f1835850
+
 cd /isaac-sim
 
 TAL_PERCEPTION_MODE=yolo \
@@ -178,3 +182,158 @@ PYTHONPATH=/root/gpufree-data/code/tal-vla:/root/gpufree-data/code/tal-vla/openp
   --server-port 8000 \
   --replan-every-n-steps 300
 
+
+cd /isaac-sim
+
+export DASHSCOPE_API_KEY=sk-0ad1057b021b4dd3b660a161f1835850
+
+TAL_PERCEPTION_MODE=yolo \
+TAL_ONLINE_TAL_CAMERA_PATH=/World/high2 \
+TAL_YOLO_CAPTURE_MODE=live_camera \
+TAL_YOLO_WARMUP_STEPS=1 \
+TAL_YOLO_CONF=0.35 \
+TAL_ONLINE_MOVE_ROBOT_ROOT=0 \
+TAL_ONLINE_WARMUP_ROBOT=1 \
+TAL_ONLINE_CONTROL_SUBSTEPS=8 \
+TAL_ONLINE_DEBUG_CONTROL=1 \
+TAL_ONLINE_DEBUG_REPLAN=1 \
+TAL_ONLINE_CAMERA_RETRIES=10 \
+TAL_ONLINE_CAMERA_PREFLIGHT_RETRIES=120 \
+TAL_ONLINE_ALLOW_RESET_FALLBACK=1 \
+PYTHONPATH=/root/gpufree-data/code/tal-vla:/root/gpufree-data/code/tal-vla/openpi/packages/openpi-client/src \
+./python.sh /root/gpufree-data/code/tal-vla/sim_inference_tal_controller2.py \
+  --prompt "pick up the cube and put it in pallet" \
+  --tal-root /root/gpufree-data/code/tal-vla/TAL2 \
+  --server-host 127.0.0.1 \
+  --server-port 8000 \
+  --replan-every-n-steps 300
+
+
+export DASHSCOPE_API_KEY=sk-0ad1057b021b4dd3b660a161f1835850
+
+cd /isaac-sim
+
+TAL_PERCEPTION_MODE=yolo \
+TAL_YOLO_CAPTURE_MODE=live_camera \
+TAL_YOLO_WARMUP_STEPS=1 \
+TAL_YOLO_CONF=0.35 \
+TAL_ONLINE_MOVE_ROBOT_ROOT=0 \
+TAL_ONLINE_WARMUP_ROBOT=1 \
+TAL_ONLINE_CONTROL_SUBSTEPS=8 \
+TAL_ONLINE_DEBUG_CONTROL=1 \
+TAL_ONLINE_DEBUG_REPLAN=1 \
+TAL_ONLINE_CAMERA_RETRIES=10 \
+TAL_ONLINE_CAMERA_PREFLIGHT_RETRIES=120 \
+TAL_ONLINE_ALLOW_RESET_FALLBACK=1 \
+PYTHONPATH=/root/gpufree-data/code/tal-vla:/root/gpufree-data/code/tal-vla/openpi/packages/openpi-client/src \
+./python.sh /root/gpufree-data/code/tal-vla/sim_inference_tal_controller2.py \
+  --prompt "pick up the cube and put it in pallet" \
+  --tal-root /root/gpufree-data/code/tal-vla/TAL2 \
+  --server-host 127.0.0.1 \
+  --server-port 8000 \
+  --replan-every-n-steps 300
+
+
+export DASHSCOPE_API_KEY=sk-0ad1057b021b4dd3b660a161f1835850
+
+cd /isaac-sim
+
+TAL_PERCEPTION_MODE=yolo \
+TAL_YOLO_CAPTURE_MODE=live_camera \
+TAL_YOLO_WARMUP_STEPS=1 \
+TAL_YOLO_CONF=0.35 \
+TAL_ONLINE_MOVE_ROBOT_ROOT=0 \
+TAL_ONLINE_WARMUP_ROBOT=1 \
+TAL_ONLINE_CONTROL_SUBSTEPS=8 \
+TAL_ONLINE_DEBUG_CONTROL=1 \
+TAL_ONLINE_DEBUG_REPLAN=1 \
+TAL_ONLINE_CAMERA_RETRIES=10 \
+TAL_ONLINE_CAMERA_PREFLIGHT_RETRIES=120 \
+TAL_ONLINE_ALLOW_RESET_FALLBACK=1 \
+PYTHONPATH=/root/gpufree-data/code/tal-vla:/root/gpufree-data/code/tal-vla/openpi/packages/openpi-client/src \
+./python.sh /root/gpufree-data/code/tal-vla/sim_inference_tal_controller2.py \
+  --prompt "pick up the cube and put it in pallet" \
+  --tal-root /root/gpufree-data/code/tal-vla/TAL2 \
+  --server-host 127.0.0.1 \
+  --server-port 8000 \
+  --replan-every-n-steps 300 \
+  2>&1 | tee /tmp/tal_move_debug_0531.log
+
+
+1.
+cd /root/gpufree-data/code/tal-vla/robot_ws
+source /opt/ros/jazzy/setup.bash
+colcon build
+
+2.
+cd /root/gpufree-data/code/tal-vla/robot_ws
+
+bash run_nav2_clean.sh
+3.
+cd /root/gpufree-data/code/tal-vla/openpi
+
+PYTHONPATH=. .venv/bin/python scripts/serve_policy.py \
+  --port 8000 \
+  policy:checkpoint \
+  --policy.config pi05_pro630_lora \
+  --policy.dir checkpoints/pi05_pro630_lora/pAndp/14999
+
+4.
+export DASHSCOPE_API_KEY=sk-0ad1057b021b4dd3b660a161f1835850
+
+cd /isaac-sim
+
+TAL_PERCEPTION_MODE=yolo \
+TAL_YOLO_CAPTURE_MODE=live_camera \
+TAL_YOLO_WARMUP_STEPS=1 \
+TAL_YOLO_CONF=0.35 \
+TAL_ONLINE_MOVE_ROBOT_ROOT=0 \
+TAL_ONLINE_WARMUP_ROBOT=1 \
+TAL_ONLINE_CONTROL_SUBSTEPS=8 \
+TAL_ONLINE_DEBUG_CONTROL=1 \
+TAL_ONLINE_DEBUG_REPLAN=1 \
+TAL_ONLINE_CAMERA_RETRIES=10 \
+TAL_ONLINE_CAMERA_PREFLIGHT_RETRIES=120 \
+TAL_ONLINE_ALLOW_RESET_FALLBACK=1 \
+PYTHONPATH=/root/gpufree-data/code/tal-vla:/root/gpufree-data/code/tal-vla/openpi/packages/openpi-client/src \
+./python.sh /root/gpufree-data/code/tal-vla/sim_inference_tal_controller2.py \
+  --prompt "pick up the cube and put it in pallet" \
+  --tal-root /root/gpufree-data/code/tal-vla/TAL2 \
+  --server-host 127.0.0.1 \
+  --server-port 8000 \
+  --replan-every-n-steps 300
+
+export DASHSCOPE_API_KEY=sk-0ad1057b021b4dd3b660a161f1835850
+
+cd /isaac-sim
+
+TAL_PERCEPTION_MODE=yolo \
+TAL_YOLO_CAPTURE_MODE=live_camera \
+TAL_YOLO_WARMUP_STEPS=1 \
+TAL_YOLO_CONF=0.35 \
+TAL_ONLINE_MOVE_ROBOT_ROOT=0 \
+TAL_ONLINE_WARMUP_ROBOT=1 \
+TAL_ONLINE_CONTROL_SUBSTEPS=8 \
+TAL_ONLINE_DEBUG_CONTROL=1 \
+TAL_ONLINE_DEBUG_REPLAN=1 \
+TAL_ONLINE_CAMERA_RETRIES=10 \
+TAL_ONLINE_CAMERA_PREFLIGHT_RETRIES=120 \
+TAL_ONLINE_ALLOW_RESET_FALLBACK=1 \
+TAL_ONLINE_WARMUP_DIRECT_SET_JOINTS=1 \
+TAL_NAV_FLATTEN_ROOT_ATTITUDE=1 \
+TAL_NAV_ENFORCE_ROOT_POSE=1 \
+TAL_NAV_MAX_TRANSLATION_STEP_M=0.003 \
+TAL_NAV_MAX_YAW_STEP_RAD=0.01 \
+TAL_NAV_ROOT_UPDATE_INTERVAL_S=0.15 \
+TAL_NAV_ACCEPT_FAILED_GOAL_IF_CLOSE=1 \
+TAL_NAV_CLOSE_POSITION_TOL_M=0.25 \
+TAL_NAV_CLOSE_YAW_TOL_RAD=1.2 \
+PYTHONPATH=/root/gpufree-data/code/tal-vla:/root/gpufree-data/code/tal-vla/openpi/packages/openpi-client/src \
+./python.sh /root/gpufree-data/code/tal-vla/sim_inference_tal_controller2.py \
+  --prompt "pick up the cube and put it in pallet" \
+  --tal-root /root/gpufree-data/code/tal-vla/TAL2 \
+  --server-host 127.0.0.1 \
+  --server-port 8000 \
+  --replan-every-n-steps 300 \
+  --nav-server-timeout-sec 45 \
+  --nav-goal-timeout-sec 120

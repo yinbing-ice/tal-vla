@@ -1,0 +1,3 @@
+[console_scripts]
+generate_occupancy_map = robot_navigation.generate_occupancy_map:main
+navigate_to_pose_client = robot_navigation.navigate_to_pose_client:main
