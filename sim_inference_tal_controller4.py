@@ -83,8 +83,6 @@ sys.argv = [sys.argv[0]] + unknown_args
 
 CAMERA_HIGH_PATH = "/World/high"
 CAMERA_WRIST_PATH = "/World/Mobie_grasper2/firefighter/joint6/wrist"
-# 2026-05-24 修改：在线闭环里把 OpenPI 低层控制相机和 TAL 高层规划相机解耦。
-# 默认仍保持 TAL 使用 high；如果场景里新增了 /World/high2，可通过 TAL_ONLINE_TAL_CAMERA_PATH=/World/high2 单独给 TAL/YOLO 使用。
 CAMERA_TAL_PATH = os.environ.get("TAL_ONLINE_TAL_CAMERA_PATH", os.environ.get("TAL_YOLO_CAMERA_PATH", CAMERA_HIGH_PATH))
 ROBOT_START_WORLD_POSITION = np.array([-0.13648, -1.41058, -1.76984], dtype=np.float32)
 TRAIN_INIT_STATE = np.array(
@@ -116,8 +114,6 @@ def _should_move_robot_root() -> bool:
 
 
 def _reinitialize_robot_if_possible(robot: Any) -> None:
-    # 2026-05-18 修改：在部分 Isaac 版本里，articulation 在 reset 或根节点位姿改动后，
-    # 低层控制器句柄可能需要重新初始化/后处理一次，否则后续 apply_action 看起来像“没生效”。
     if hasattr(robot, "initialize"):
         try:
             robot.initialize()
@@ -131,8 +127,6 @@ def _reinitialize_robot_if_possible(robot: Any) -> None:
 
 
 def _initialize_robot_handles_if_needed(robot: Any, world: Any, *, headless: bool, root_pose_guard: Any | None = None) -> None:
-    # 2026-05-18 修改：在线闭环里默认优先“保住当前姿态”，
-    # 因此先做更长一点的非 reset 句柄等待，不再默认一上来就走 reset fallback。
     init_steps = max(int(os.environ.get("TAL_ONLINE_ARTICULATION_INIT_STEPS", "30")), 1)
     for _ in range(init_steps):
         _step_world_with_root_guard(world, render=not headless, root_pose_guard=root_pose_guard)
@@ -146,8 +140,6 @@ def _initialize_robot_handles_if_needed(robot: Any, world: Any, *, headless: boo
         if dof_names is not None:
             return
 
-    # 2026-05-18 修改：只有显式允许时才启用 reset 兜底，
-    # 避免为了拿句柄把用户手动摆好的机械臂/夹爪姿态重置掉，表现成“突然僵直”。
     if not _allow_reset_fallback():
         raise RuntimeError(
             "Articulation handle is still not ready after non-reset initialization; "
@@ -199,37 +191,6 @@ def _allow_reset_fallback() -> bool:
     return raw.lower() in {"1", "true", "yes", "on"}
 
 
-def _stage_has_prim(prim_path: str) -> bool:
-    try:
-        import omni.usd  # type: ignore
-
-        stage = omni.usd.get_context().get_stage()
-        if stage is None:
-            return False
-        prim = stage.GetPrimAtPath(prim_path)
-        return bool(prim and prim.IsValid())
-    except Exception:
-        return False
-
-
-def resolve_robot_root_prim_path(robot_prim_path: str) -> str:
-    # 2026-06-06 修改：导航刚体运动要控制真实 articulation/root prim，而不是只控制外层容器 XForm。
-    # Mobie_grasper2 的腕部相机路径在 /World/Mobie_grasper2/firefighter/... 下；
-    # 如果 PhysX 真正掀起的是 firefighter 这一层，继续写 /World/Mobie_grasper2 会压不住车头。
-    # 可通过 TAL_NAV_ROOT_PRIM_PATH 手动指定，例如 /World/Mobie_grasper2/firefighter。
-    override = os.environ.get("TAL_NAV_ROOT_PRIM_PATH", "").strip()
-    if override:
-        return override
-    candidates = [
-        f"{robot_prim_path}/firefighter",
-        robot_prim_path,
-    ]
-    for candidate in candidates:
-        if _stage_has_prim(candidate):
-            return candidate
-    return robot_prim_path
-
-
 def _render_after_root_enforce() -> bool:
     raw = os.environ.get("TAL_NAV_RENDER_AFTER_ROOT_ENFORCE")
     if raw is None:
@@ -253,9 +214,6 @@ def _render_world_if_possible(world: Any) -> None:
 
 
 def _step_world_with_root_guard(world: Any, *, render: bool, root_pose_guard: Any | None = None) -> None:
-    # 2026-06-02 修改：Isaac 的 world.step(render=True) 往往会在函数内部先完成物理解算并渲染，
-    # 如果 root guard 在 step 返回后才修正底盘，VNC/相机看到的仍可能是被物理解算顶歪的那一帧。
-    # 因此有 root guard 时改成：不渲染地推进物理 -> 修正 root -> 再单独渲染。
     render_after_enforce = render and root_pose_guard is not None and _render_after_root_enforce()
     world.step(render=False if render_after_enforce else render)
     if root_pose_guard is not None:
@@ -277,8 +235,6 @@ def _get_initial_robot_state() -> np.ndarray:
 
 
 def _capture_current_robot_pose_from_stage(robot_prim_path: str) -> tuple[np.ndarray | None, np.ndarray | None]:
-    # 2026-05-18 修改：当 articulation 句柄还没 ready 时，直接从 live stage 的 joint prim 读取当前关节值，
-    # 用来保存用户在 GUI 里手动摆好的预抓取姿态。这样即使后面为了拿句柄走 reset fallback，也有机会把姿态恢复回来。
     try:
         import omni.usd  # type: ignore
     except Exception:
@@ -388,8 +344,6 @@ def _restore_robot_pose_if_available(
                 return
             remapped_indices.append(dof_names.index(name))
         pose_indices = np.asarray(remapped_indices, dtype=np.int32)
-    # 2026-05-18 修改：句柄初始化/兜底 reset 之后，把用户在场景里已经摆好的机械臂/夹爪姿态恢复回去，
-    # 避免脚本进入 TAL + OpenPI 主循环前就把预抓取姿态“拉直/打掉”。
     restore_steps = max(int(os.environ.get("TAL_ONLINE_RESTORE_POSE_STEPS", "60")), 1)
     restore_action = ArticulationAction(
         joint_positions=np.asarray(pose_state, dtype=np.float32),
@@ -561,29 +515,32 @@ def quaternion_to_rpy(quaternion: np.ndarray | list[float] | tuple[float, ...] |
     if q.size != 4:
         return 0.0, 0.0, 0.0
     w, x, y, z = [float(v) for v in q]
+    
+    # Roll (x-axis rotation)
     sinr_cosp = 2.0 * (w * x + y * z)
     cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
-    roll = math.atan2(sinr_cosp, cosr_cosp)
+    roll = math.atan2(sinr_cosp, cosr_cosp)  # <--- 修复：这里必须是 cosr_cosp！
+    
+    # Pitch (y-axis rotation)
     sinp = 2.0 * (w * y - z * x)
     if abs(sinp) >= 1.0:
         pitch = math.copysign(math.pi / 2.0, sinp)
     else:
         pitch = math.asin(sinp)
+        
+    # Yaw (z-axis rotation)
     siny_cosp = 2.0 * (w * z + x * y)
     cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
     yaw = math.atan2(siny_cosp, cosy_cosp)
+    
     return roll, pitch, yaw
 
 
 def rpy_to_quaternion_wxyz(roll: float, pitch: float, yaw: float) -> np.ndarray:
-    # 2026-06-02 修改：Isaac 的 XFormPrim.get/set_world_poses 使用 wxyz 四元数顺序。
-    # 之前这里额外转成 xyzw，写回 root orientation 时会把 yaw/roll/pitch 搞乱，
-    # 视频里小车车头大幅翘起、车尾离地很符合这个错误的表现。
     return rpy_to_quaternion(roll, pitch, yaw)
 
 
 def quaternion_wxyz_to_rpy(quaternion: np.ndarray | list[float] | tuple[float, ...] | None) -> tuple[float, float, float]:
-    # 2026-06-02 修改：和上面的写入函数保持一致，root orientation 统一按 Isaac wxyz 读取。
     if quaternion is None:
         return 0.0, 0.0, 0.0
     q = np.asarray(quaternion, dtype=np.float32).reshape(-1)
@@ -593,7 +550,6 @@ def quaternion_wxyz_to_rpy(quaternion: np.ndarray | list[float] | tuple[float, .
 
 
 def quaternion_wxyz_to_yaw(quaternion: np.ndarray | list[float] | tuple[float, ...] | None) -> float:
-    # 2026-06-02 修改：Nav2 close 判断也必须用同一套 wxyz 约定，否则会误判 yaw 误差。
     return quaternion_wxyz_to_rpy(quaternion)[2]
 
 
@@ -844,8 +800,6 @@ class TALSceneGraphProvider:
 
     def _refresh_live_datapoint(self, *, image_rgb: np.ndarray | None = None) -> Any:
         isaac_env = self._runtime.isaac_env
-        # 2026-05-30 修改：在线重规划只读取当前世界状态，不再重建 root datapoint，
-        # 避免高层 TAL/YOLO 刷新动作干扰底层 OpenPI 连续控制。
         isaac_env.update_metrics()
         return isaac_env.getObservedDatapoint(self._runtime.sim_env_config, RESET_DATAPOINT=False, image_rgb=image_rgb)
 
@@ -941,8 +895,6 @@ def _try_read_camera_rgb(camera: Any) -> np.ndarray | None:
 
 
 def _read_camera_rgb(camera: Any, camera_name: str) -> np.ndarray:
-    # 2026-05-18 修改：在线控制阶段仍然只使用 get_rgba() 这一条取图路径，
-    # 但把“首帧等待”和“空帧重试”从直接崩溃改成温和等待，避免 step 0 因相机尚未出图退出。
     retries = max(int(os.environ.get("TAL_ONLINE_CAMERA_RETRIES", "6")), 1)
     for _ in range(retries):
         image_bgr = _try_read_camera_rgb(camera)
@@ -1001,12 +953,12 @@ def infer_navigation_approach_distance(runtime_ctx: TALRuntimeContext, object_na
         return float(overrides[object_name])
     source = (source_action_name or "").lower()
     if source == "pick":
-        return float(getattr(env_cfg, "pick_approach_distance", getattr(env_cfg, "base_approach_distance", 0.50)))
+        return float(getattr(env_cfg, "pick_approach_distance", getattr(env_cfg, "base_approach_distance", 0.850)))
     if source == "pushto":
-        return float(getattr(env_cfg, "push_approach_distance", getattr(env_cfg, "base_approach_distance", 0.50)))
+        return float(getattr(env_cfg, "push_approach_distance", getattr(env_cfg, "base_approach_distance", 0.850)))
     if source == "picknplaceaonb":
-        return float(getattr(env_cfg, "pick_approach_distance", getattr(env_cfg, "base_approach_distance", 0.50)))
-    return float(getattr(env_cfg, "base_approach_distance", 0.50))
+        return float(getattr(env_cfg, "pick_approach_distance", getattr(env_cfg, "base_approach_distance", 0.850)))
+    return float(getattr(env_cfg, "base_approach_distance", 0.850))
 
 
 def infer_navigation_approach_direction(runtime_ctx: TALRuntimeContext, object_name: str, robot_xy: np.ndarray, target_xy: np.ndarray) -> np.ndarray:
@@ -1023,9 +975,6 @@ def infer_navigation_approach_direction(runtime_ctx: TALRuntimeContext, object_n
 
 def build_navigation_goal(runtime_ctx: TALRuntimeContext, object_name: str, *, source_action_name: str | None = None) -> NavigationGoal:
     isaac_env = runtime_ctx.isaac_env
-    # 2026-05-31 修改：当前 TAL runtime 里注入的 isaac_env 是模块，不是类实例。
-    # 旧版 moveTo 逻辑里误按实例接口调用 get_metrics()，会直接报 AttributeError。
-    # 这里统一兼容当前模块式 API：先刷新模块级 metrics，再从模块全局状态里读取。
     isaac_env.update_metrics()
     metrics = getattr(isaac_env, "metrics", None)
     if not isinstance(metrics, Mapping):
@@ -1051,14 +1000,19 @@ class RobotRootPoseController:
         self._prim = prim
 
     def get_world_pose(self) -> tuple[np.ndarray | None, np.ndarray | None]:
-        positions, orientations = self._prim.get_world_poses()
-        if positions is None or len(positions) == 0:
-            return None, None
-        position = np.asarray(positions[0], dtype=np.float32)
-        orientation = None
-        if orientations is not None and len(orientations) > 0:
-            orientation = np.asarray(orientations[0], dtype=np.float32)
-        return position, orientation
+        if hasattr(self._prim, "get_world_poses"):
+            positions, orientations = self._prim.get_world_poses()
+            if positions is None or len(positions) == 0:
+                return None, None
+            position = np.asarray(positions[0], dtype=np.float32)
+            orientation = None
+            if orientations is not None and len(orientations) > 0:
+                orientation = np.asarray(orientations[0], dtype=np.float32)
+            return position, orientation
+        elif hasattr(self._prim, "get_world_pose"):
+            position, orientation = self._prim.get_world_pose()
+            return np.asarray(position, dtype=np.float32), np.asarray(orientation, dtype=np.float32)
+        return None, None
 
     def set_world_pose(
         self,
@@ -1071,13 +1025,14 @@ class RobotRootPoseController:
             raise RuntimeError("Failed to read root prim world pose.")
         target_position = current_position if position is None else np.asarray(position, dtype=np.float32)
         target_orientation = current_orientation if orientation is None else np.asarray(orientation, dtype=np.float32)
-        positions = target_position.reshape(1, 3)
-        orientations = None if target_orientation is None else target_orientation.reshape(1, 4)
-        self._prim.set_world_poses(positions=positions, orientations=orientations)
+        if hasattr(self._prim, "set_world_poses"):
+            positions = target_position.reshape(1, 3)
+            orientations = None if target_orientation is None else target_orientation.reshape(1, 4)
+            self._prim.set_world_poses(positions=positions, orientations=orientations)
+        elif hasattr(self._prim, "set_world_pose"):
+            self._prim.set_world_pose(position=target_position, orientation=target_orientation)
 
     def set_linear_velocity(self, velocity: np.ndarray) -> None:
-        # 2026-06-02 修改：刚体平移 root pose 前后主动清零 XFormPrim 速度。
-        # 单靠 Articulation 的速度清零不一定覆盖根 prim，容易让 PhysX 残余角速度继续把车身抬起来。
         if hasattr(self._prim, "set_linear_velocities"):
             try:
                 self._prim.set_linear_velocities(np.asarray(velocity, dtype=np.float32).reshape(1, 3))
@@ -1085,7 +1040,6 @@ class RobotRootPoseController:
                 pass
 
     def set_angular_velocity(self, velocity: np.ndarray) -> None:
-        # 2026-06-02 修改：同上，特别清零角速度，避免导航过程中姿态越积越歪。
         if hasattr(self._prim, "set_angular_velocities"):
             try:
                 self._prim.set_angular_velocities(np.asarray(velocity, dtype=np.float32).reshape(1, 3))
@@ -1119,9 +1073,6 @@ class RobotRootPoseGuard:
                 pass
 
     def enforce_after_step(self) -> None:
-        # 2026-06-02 修改：覆盖 nav_bridge 创建前的准备阶段。
-        # 初始化句柄、reset fallback、恢复机械臂姿态都会推进 world.step；如果不在这些 step 后固定 root，
-        # 小车可能在 TAL 调用前就已经被机械臂驱动/接触解算带偏，后续导航只是在错误姿态上继续移动。
         if not self._enabled or self._position is None:
             return
         self._zero_root_velocity()
@@ -1139,22 +1090,11 @@ class IsaacNavBridge:
         self._applied_vw = 0.0
         self._sim_time_s = 0.0
         self._active_goal: NavigationGoal | None = None
-        # 2026-06-01 修改：当前工程此前把导航 bridge 简化得太厉害，
-        # 每次都从 PhysX 当前 root pose 读回位置再继续写回，导致悬空/姿态异常被持续放大。
-        # 这里恢复接近老版本的“自维护运动状态”思路：
-        # 单独维护逻辑导航位姿 (_x/_y/_yaw) 和写回 root 的显示位姿 (_xform_x/_xform_y/_xform_yaw)，
-        # 避免把物理抖动再次反馈进导航积分。
         self._root_yaw_offset = float(os.environ.get("TAL_ROBOT_ROOT_YAW_OFFSET", "0.0"))
         self._max_linear_accel = max(float(os.environ.get("TAL_NAV_MAX_LINEAR_ACCEL", "0.20")), 1e-4)
         self._max_angular_accel = max(float(os.environ.get("TAL_NAV_MAX_ANGULAR_ACCEL", "0.50")), 1e-4)
-        # 2026-05-31 修改：当前 moveTo 仍采用“刚体平移”过渡方案，为了尽量减小
-        # PhysX 对 root 瞬移的敏感性，这里对每步平移和每步转角做硬限幅。
-        # 后续若切到真实轮式控制，可删除这层保守约束。
         self._max_translation_step_m = max(float(os.environ.get("TAL_NAV_MAX_TRANSLATION_STEP_M", "0.01")), 1e-4)
         self._max_yaw_step_rad = max(float(os.environ.get("TAL_NAV_MAX_YAW_STEP_RAD", "0.03")), 1e-4)
-        # 2026-05-31 修改：进一步降低 root pose 的写入频率。
-        # 现在不是每个仿真步都 set_world_pose，而是累计到固定时间片再写一次，
-        # 尽量减小对 PhysX broadphase / articulation 的持续刺激。
         self._root_update_interval_s = max(float(os.environ.get("TAL_NAV_ROOT_UPDATE_INTERVAL_S", "0.10")), 1e-3)
         self._root_update_accum_s = 0.0
         self._enforce_root_pose = os.environ.get("TAL_NAV_ENFORCE_ROOT_POSE", "1").lower() in {
@@ -1173,19 +1113,12 @@ class IsaacNavBridge:
         self._state_port = int(probe.getsockname()[1])
         probe.close()
         self._bridge_process: subprocess.Popen[str] | None = None
-        # 2026-05-31 修改：记录导航桥初始化时的底盘根节点高度。
-        # 目前 moveTo 仍采用“刚体平移”的过渡实现，不走真实轮子驱动；
-        # 若每帧直接把 Isaac 当前返回的 z 再写回去，容易把物理解算中的抖动不断积累，
-        # 最终出现小车“飞起来”。这里固定使用启动时的根节点高度来平移底盘。
         initial_position, _ = self._robot_root_controller.get_world_pose()
         self._base_z = float(initial_position[2]) if initial_position is not None else 0.0
         position, orientation = self._robot_root_controller.get_world_pose()
         if position is None:
             raise RuntimeError("Failed to read initial robot world pose for navigation bridge.")
         initial_root_roll, initial_root_pitch, initial_root_yaw = quaternion_wxyz_to_rpy(orientation)
-        # 2026-06-02 修改：当前 moveTo 目标是“连续刚体在地面上平移”，不是让轮子真实滚动。
-        # 因此导航阶段默认压平 root 的 roll/pitch，只保留 yaw；如果后续确认 USD 模型本身
-        # 需要非零初始姿态，可设置 TAL_NAV_FLATTEN_ROOT_ATTITUDE=0 回退为保留初始 roll/pitch。
         flatten_root_attitude = os.environ.get("TAL_NAV_FLATTEN_ROOT_ATTITUDE", "1").lower() in {
             "1",
             "true",
@@ -1200,8 +1133,6 @@ class IsaacNavBridge:
             corrected_root_yaw = normalize_angle(initial_root_yaw + self._root_yaw_offset)
             self._robot_root_controller.set_world_pose(
                 position=np.asarray(position, dtype=np.float32),
-                # 2026-06-02 修改：root yaw offset 写回也使用 Isaac wxyz 顺序，
-                # 并遵守上面的平面化策略，避免一开始就把底盘写成翘头姿态。
                 orientation=rpy_to_quaternion_wxyz(initial_root_roll, initial_root_pitch, corrected_root_yaw),
             )
             self._zero_root_velocity()
@@ -1209,8 +1140,6 @@ class IsaacNavBridge:
         self._xform_x = float(position[0])
         self._xform_y = float(position[1])
         self._xform_z = float(position[2])
-        # 2026-06-02 修改：XFormPrim orientation 统一按 wxyz 解读；导航刚体移动默认只改 yaw。
-        # 这样每次 root pose 写回都是固定 z + 水平姿态，避免把物理抖动反馈进下一步。
         self._root_roll, self._root_pitch, root_yaw = quaternion_wxyz_to_rpy(orientation)
         if flatten_root_attitude:
             self._root_roll = 0.0
@@ -1224,8 +1153,6 @@ class IsaacNavBridge:
         self._start_bridge_process()
 
     def _zero_root_velocity(self) -> None:
-        # 2026-06-02 修改：每次刚体搬运前后都清零 root 和 articulation 速度。
-        # 这是为了让“连续刚体平移”更像一个确定性的运动学更新，而不是让 PhysX 继续积分旧的倾覆速度。
         zero = np.zeros(3, dtype=np.float32)
         self._robot_root_controller.set_linear_velocity(zero)
         self._robot_root_controller.set_angular_velocity(zero)
@@ -1244,10 +1171,6 @@ class IsaacNavBridge:
         )
 
     def sync_from_current_root(self) -> None:
-        # 2026-06-02 修改：真正开始 moveTo 前，从 Isaac 当前 root 重新同步导航内部状态。
-        # bridge 创建得比较早，warmup/TAL/相机预热之后，内部缓存的 _xform_* 可能还是旧位置；
-        # 若直接 set_active_goal，就会先把车“闪现”回旧缓存。这里把导航起点改成当前实际位置，
-        # 并按 flatten 策略只保留 yaw，让刚体移动从水平地面姿态开始。
         position, orientation = self._robot_root_controller.get_world_pose()
         if position is None:
             return
@@ -1272,8 +1195,6 @@ class IsaacNavBridge:
         self._apply_root_pose()
 
     def _apply_root_pose(self) -> None:
-        # 2026-06-02 修改：把底盘当作运动学基座写回，而不是让 PhysX 自由积分。
-        # 这一步不仅用于导航，也用于 warmup/OpenPI 控制阶段，避免机械臂驱动反作用力把整车掀起来。
         self._zero_root_velocity()
         self._robot_root_controller.set_world_pose(
             position=np.array([self._xform_x, self._xform_y, self._xform_z], dtype=np.float32),
@@ -1282,17 +1203,10 @@ class IsaacNavBridge:
         self._zero_root_velocity()
 
     def enforce_root_pose_after_step(self) -> None:
-        # 2026-06-02 修改：world.step() 之后再钉一次 root pose。
-        # 如果只在 step 前写位姿，PhysX 仍可能在这一帧里通过接触/关节力把底盘顶歪。
-        # 2026-06-02 修改：只在 moveTo 导航阶段钉 root pose。非导航阶段如果也强制写回，
-        # TAL/OpenPI 切换前就会把小车拉回 bridge 初始化时的旧位置/旧姿态，表现为“闪现回原位”。
         if self._enforce_root_pose and (self._active_goal is not None or self._idle_root_hold_enabled):
             self._apply_root_pose()
 
     def enforce_after_step(self) -> None:
-        # 2026-06-02 修改：和 RobotRootPoseGuard 对齐 step 后修正接口。
-        # _step_world_with_root_guard 会统一调用 enforce_after_step；导航阶段这里转到
-        # IsaacNavBridge 自己维护的 root pose，避免 AttributeError 让仿真提前退出。
         self.enforce_root_pose_after_step()
 
     @staticmethod
@@ -1302,21 +1216,12 @@ class IsaacNavBridge:
         return max(current - max_delta, target)
 
     def _start_bridge_process(self) -> None:
-        # 2026-05-30 修改：不要在 Isaac Python 进程内直接 import rclpy。
-        # 当前机器的 ROS2 是独立的 Jazzy 环境，若把 rclpy 拉进 Isaac 解释器，
-        # 很容易和 Kit/OmniGraph/Replicator 的 Python 运行时冲突并触发崩溃。
-        # 因此桥接器改成真正的外部 ROS 子进程。
-        # 2026-05-31 修改：桥接子进程若启动失败，直接把 stdout/stderr 带回主进程，
-        # 避免只看到“exited immediately”而定位不到真实根因。
         self._bridge_stdout_path = Path(f"/tmp/isaac_nav_bridge_{self._state_port}.out.log")
         self._bridge_stderr_path = Path(f"/tmp/isaac_nav_bridge_{self._state_port}.err.log")
         cmd = [
             "bash",
             "-lc",
             (
-                # 2026-05-31 修改：桥接 ROS 子进程必须主动清理 Isaac/Kit 注入的 Python 环境变量。
-                # 否则 source Jazzy 后仍会错误地混用 Isaac 自带标准库，触发 SRE module mismatch，
-                # 并进一步导致 rclpy 无法按 ROS2 的 Python 环境正常导入。
                 "mkdir -p /tmp/ros_log_isaac_nav_bridge && "
                 "export ROS_LOG_DIR=/tmp/ros_log_isaac_nav_bridge && "
                 "unset PYTHONHOME PYTHONPATH LD_LIBRARY_PATH && "
@@ -1389,8 +1294,6 @@ class IsaacNavBridge:
             sock.close()
 
     def advance(self, dt: float) -> None:
-        # 2026-05-31 修改：只有在真正执行导航子任务时，才允许导航桥接管底盘平移。
-        # 非导航阶段保持完全静默，避免 warmup / 相机预热 / OpenPI 控制阶段也误改 robot root。
         if self._active_goal is None:
             self._cmd_vx = 0.0
             self._cmd_vw = 0.0
@@ -1398,10 +1301,6 @@ class IsaacNavBridge:
             self._applied_vw = 0.0
             self._sim_time_s += dt
             self._root_update_accum_s = 0.0
-            # 2026-06-02 修改：非导航阶段只发布 odom/clock 状态，不再持续写回 root pose。
-            # 之前 bridge 一创建就把当时读到的 root pose 固化；TAL 规划、相机预热、OpenPI 连接前
-            # 每步都 _apply_root_pose()，会表现成“小车闪现回原来的位置/姿态”。真正移动底盘只应发生在
-            # moveTo active goal 期间，OpenPI pick/place 阶段也不应该被导航桥抢 root 控制权。
             if self._idle_root_hold_enabled:
                 self._apply_root_pose()
             self._publish_state()
@@ -1430,10 +1329,6 @@ class IsaacNavBridge:
         self._xform_y = self._y
         self._xform_z = self._base_z
         self._xform_yaw = self._yaw
-        # 2026-06-01 修改：root pose 写回时只使用 bridge 自维护的连续状态，不再读取
-        # PhysX 当前 root pose 作为下一步输入，避免悬空/姿态异常被积分放大。
-        # 2026-06-02 修改：写 root pose 前后清零速度，并用 wxyz 四元数 + 水平 roll/pitch，
-        # 让小车按运动学刚体贴地移动，不再把当前倾斜姿态带进下一帧。
         self._apply_root_pose()
         self._publish_state()
 
@@ -1451,7 +1346,6 @@ class IsaacNavBridge:
         self._xform_z = self._base_z
         self._xform_yaw = self._yaw
         self._idle_root_hold_enabled = True
-        # 2026-06-02 修改：导航结束强制落到同一套平面 root pose，避免 settle 时再次写错姿态。
         self._apply_root_pose()
 
 
@@ -1465,11 +1359,6 @@ class SubprocessNav2GoalClient:
             "bash",
             "-lc",
             (
-                # 2026-05-31 修改：导航 goal 子进程和桥接子进程一样，需要和 Isaac Python 环境彻底隔离。
-                # 这里显式清理 PYTHONHOME/PYTHONPATH/LD_LIBRARY_PATH，并强制使用系统 Python，
-                # 避免 ROS2 Jazzy 的 rclpy 再次被 Isaac 解释器环境污染。
-                # 2026-05-31 修改：当前 robot_ws 的 local_setup.bash 不能替代 ROS2 Jazzy 主环境，
-                # 若只 source 工作区而不先 source /opt/ros/jazzy/setup.bash，rclpy 仍然找不到。
                 "mkdir -p /tmp/ros_log_nav2_goal && "
                 "export ROS_LOG_DIR=/tmp/ros_log_nav2_goal && "
                 "unset PYTHONHOME PYTHONPATH LD_LIBRARY_PATH && "
@@ -1525,8 +1414,6 @@ def warm_up_cameras(
     root_pose_guard: Any | None = None,
 ) -> None:
     for _ in range(30):
-        # 2026-06-02 修改：相机预热属于 TAL/OpenPI 前的准备阶段，不应让非 active 的导航桥
-        # 接管 root；若传入 early guard，则继续把底盘钉回启动时的地面姿态，避免预热 world.step 把车撬歪。
         if nav_bridge is None and root_pose_guard is not None:
             _step_world_with_root_guard(world, render=True, root_pose_guard=root_pose_guard)
         else:
@@ -1547,10 +1434,6 @@ def wait_for_camera_frames(
     cam_tal: Any | None = None,
     root_pose_guard: Any | None = None,
 ) -> dict[str, np.ndarray]:
-    # 2026-05-18 修改：进入主循环前做双目预热，不再只 sleep 干等。
-    # 对 Isaac 相机来说，真正让 high / wrist 两路都产出首帧，通常需要推进几次渲染/仿真步。
-    # 2026-05-24 修改：如果 TAL 规划单独使用 high2，也一并在这里预热首帧，
-    # 这样 OpenPI 仍然用原来的 high+wrist，而 TAL/YOLO 可以稳定读到自己的高位相机。
     preflight_retries = max(int(os.environ.get("TAL_ONLINE_CAMERA_PREFLIGHT_RETRIES", "120")), 1)
     for _ in range(preflight_retries):
         _step_world_with_root_guard(world, render=not headless, root_pose_guard=root_pose_guard)
@@ -1570,7 +1453,6 @@ def capture_rgb_images(cam_high: Any, cam_wrist: Any, cam_tal: Any | None = None
         "cam_high": _read_camera_rgb(cam_high, "cam_high"),
         "cam_wrist": _read_camera_rgb(cam_wrist, "cam_wrist"),
     }
-    # 2026-05-24 修改：TAL 高层规划图像单独读取；如果未配置独立 high2，就回退复用 cam_high。
     images["cam_tal"] = _read_camera_rgb(cam_tal, "cam_tal") if cam_tal is not None else images["cam_high"]
     return images
 
@@ -1622,23 +1504,10 @@ def apply_robot_action(
         joint_positions=target_action,
         joint_indices=target_indices,
     )
-
-    # 2026-05-18 修改：这里优先使用 articulation 的 joint position target 接口，
-    # 因为它比单次 apply_action 更像“持续保持目标”，在当前 Mobie_grasper2 上更稳定。
-    # 如果当前 Isaac 版本没有这个接口，再回退到 apply_action。
     use_position_targets = hasattr(robot, "set_joint_position_targets")
-
-    # 2026-05-18 修改：为了排查当前机器人 articulation 偶发“不响应目标”的问题，
-    # 提供一个直接写入关节位置的调试兜底开关。
-    # 这个模式不是物理驱动，而是直接把关节 teleport 到目标值，
-    # 更适合先验证 TAL + OpenPI 闭环是否整体连通。
     use_direct_set = os.environ.get("TAL_ONLINE_DIRECT_SET_JOINTS", "0").lower() in {"1", "true", "yes", "on"}
     can_direct_set = hasattr(robot, "set_joint_positions")
 
-    # 2026-05-18 修改：在线 TAL + OpenPI 闭环里，只在循环末尾瞬时下发一次目标时，
-    # 会偶发出现“OpenPI 输出在变、关节状态几乎不动”的现象。
-    # 这里把同一个关节目标在几个连续子步中重复下发，并同步推进 world.step，
-    # 让控制器/drive 有足够时间真正吃进目标值。
     control_substeps = max(int(os.environ.get("TAL_ONLINE_CONTROL_SUBSTEPS", "4")), 1)
     for _ in range(control_substeps):
         if use_direct_set and can_direct_set:
@@ -1671,11 +1540,6 @@ def smoothly_move_robot_root(
         start_orientation = np.asarray(current_orientation, dtype=np.float32)
 
     target_position = np.asarray(target_position, dtype=np.float32)
-
-    # =================================================================
-    # 🌟 核心修复 1：防止遁地（穿模）
-    # 强制将目标位置的 Z 轴高度，设为机器人当前安全的物理高度
-    # =================================================================
     print(f"[InitMove] Original Target Z: {target_position[2]:.4f}, Overriding to Safe Z: {start_position[2]:.4f}")
     target_position[2] = start_position[2]
 
@@ -1685,17 +1549,9 @@ def smoothly_move_robot_root(
     for step in range(num_steps):
         alpha = float(step + 1) / float(num_steps)
         smooth_alpha = 0.5 * (1.0 - np.cos(alpha * np.pi))
-        
         interpolated_position = start_position + smooth_alpha * (target_position - start_position)
-        
-        # =================================================================
-        # 🌟 核心修复 2：防摩擦微悬浮
-        # 在移动过程中 (类似于一个抛物线)，将机器人最高抬升 3 厘米 (0.03米)
-        # 避免脚底板/轮子和地面产生物理碰撞和摩擦，导致机器人翻转
-        # =================================================================
-        lift_height = np.sin(alpha * np.pi) * 0.03 
+        lift_height = np.sin(alpha * np.pi) * 0.03
         interpolated_position[2] += lift_height
-        
         if start_orientation is None:
             robot.set_world_pose(position=interpolated_position)
         else:
@@ -1703,16 +1559,14 @@ def smoothly_move_robot_root(
                 position=interpolated_position,
                 orientation=start_orientation,
             )
-            
         robot.set_linear_velocity(np.zeros(3))
         robot.set_angular_velocity(np.zeros(3))
         world.step(render=True)
 
-    # 稳定阶段：给物理引擎一点时间让机器人稳稳落回地面
     for _ in range(60):
         robot.set_linear_velocity(np.zeros(3))
         robot.set_angular_velocity(np.zeros(3))
-        advance_simulation(world, nav_bridge, dt, render=False)
+        advance_simulation(world, None, dt=0.05, render=False)
 
     final_position, _ = robot.get_world_pose()
     if final_position is None:
@@ -1734,9 +1588,6 @@ def warm_up_robot(
     target_state = _get_initial_robot_state()
     start_positions = robot.get_joint_positions()[target_indices]
     num_steps = 240
-    # 2026-06-02 修改：准备阶段默认直接写关节位置，而不是用 apply_action 通过物理驱动慢慢推。
-    # 当前任务希望底盘按连续刚体运动保持在地面上，warmup 的机械臂驱动力会给底盘反作用力，
-    # 视频里“一开始车尾翘起来”很像这个阶段把车体撬动；直接插值关节可避免准备阶段先把 root 带偏。
     warmup_direct_set = os.environ.get("TAL_ONLINE_WARMUP_DIRECT_SET_JOINTS", "1").lower() in {
         "1",
         "true",
@@ -1833,7 +1684,6 @@ def main() -> None:
 
     cam_high = Camera(prim_path=CAMERA_HIGH_PATH, resolution=(224, 224))
     cam_wrist = Camera(prim_path=CAMERA_WRIST_PATH, resolution=(224, 224))
-    # 2026-05-24 修改：OpenPI 继续使用 high+wrist；如果单独配置了 TAL 相机，则额外初始化 high2 给高层规划用。
     cam_tal = None
     if CAMERA_TAL_PATH != CAMERA_HIGH_PATH:
         cam_tal = Camera(prim_path=CAMERA_TAL_PATH, resolution=(224, 224))
@@ -1847,18 +1697,11 @@ def main() -> None:
     manual_scene_graph = load_manual_scene_graph(args.manual_scene_graph_json)
 
     saved_pose_state, saved_pose_indices = _capture_current_robot_pose(robot, robot_prim_path)
-    # 2026-06-02 修改：准备阶段也会推进仿真步，必须在初始化/恢复关节前就准备 root guard。
-    # 否则小车可能在 TAL 规划前已经因为机械臂驱动反作用力漂移或翘头。
-    robot_root_prim_path = resolve_robot_root_prim_path(robot_prim_path)
-    print(f"Robot root prim used for TAL rigid-body navigation: {robot_root_prim_path}")
-    # 2026-06-06 修改：root pose guard / nav bridge 改为控制解析出的真实 root prim。
-    # 对 Mobie_grasper2，默认优先 /World/Mobie_grasper2/firefighter；否则才回退到外层容器。
-    robot_root_controller = RobotRootPoseController(XFormPrim(robot_root_prim_path))
+    # 🌟 核心修复 1：将 robot_root_controller 指向 robot 实例
+    # 这样在设置和获取世界位姿时，会自动同步物理和渲染，不再会出现回弹或悬空现象。
+    robot_root_controller = RobotRootPoseController(robot)
     early_root_pose_guard = RobotRootPoseGuard(robot, robot_root_controller)
 
-    # 2026-05-18 修改：在线闭环按“两阶段”处理启动逻辑：
-    # 先尽量保存场景里当前已经摆好的机械臂/夹爪姿态，再做句柄初始化，最后把姿态恢复回去。
-    # 这样既能拿到可用 articulation handle，又尽量不破坏预抓取位姿。
     if _should_reset_world():
         world.reset()
         early_root_pose_guard.enforce_after_step()
@@ -1875,10 +1718,6 @@ def main() -> None:
         root_pose_guard=early_root_pose_guard,
     )
 
-    # 2026-06-01 修改：导航阶段不要直接通过 Articulation 对象 set_world_pose 搬 robot root。
-    # 老版本这里使用的是根 prim 的 XFormPrim 控制器，这样比直接改 articulation 更稳，
-    # 能减少底盘悬空、关节状态变 nan、以及后续 PhysX broadphase 报错。
-
     sim_dof_names = robot.dof_names
     target_indices = []
     for name in JOINT_NAMES_IN_ORDER:
@@ -1890,8 +1729,6 @@ def main() -> None:
 
     nav_bridge = IsaacNavBridge(robot, robot_root_controller)
 
-    # 2026-05-30 修改：在线 moveTo 交给导航子模块执行，默认仍禁用 root move，
-    # 避免直接搬 articulation 根节点时触发 PhysX 不稳定。
     if _should_move_robot_root():
         smoothly_move_robot_root(robot, world, ROBOT_START_WORLD_POSITION)
         if _should_reinitialize_robot():
@@ -1914,8 +1751,6 @@ def main() -> None:
     nav_client = SubprocessNav2GoalClient("/root/gpufree-data/code/tal-vla/robot_ws/install/local_setup.bash")
     warmup_steps = max(int(args.nav_warmup_sec / max(args.nav_control_dt, 1e-3)), 1)
     for _ in range(warmup_steps):
-        # 2026-06-02 修改：Nav2/相机预热阶段还没有 active moveTo，继续使用 early guard。
-        # 这样准备阶段不会因为 bridge 非 active 而失去 root 固定，也不会把旧 bridge 状态写回。
         _step_world_with_root_guard(world, render=not args.headless, root_pose_guard=early_root_pose_guard)
 
     print("Starting TAL(native scene graph) + OpenPI closed-loop inference...")
@@ -1958,8 +1793,6 @@ def main() -> None:
                 images = capture_rgb_images(cam_high, cam_wrist, cam_tal=cam_tal)
                 latest_images = images
             except RuntimeError as exc:
-                # 2026-05-18 修改：主循环中若相机偶发空帧，不直接终止整条控制链，
-                # 而是复用上一帧图像继续运行，优先保证 TAL + OpenPI + 物理控制主流程稳定。
                 if latest_images is None:
                     raise
                 print(f"[CameraWarning] {exc}; reuse previous RGB frame", flush=True)
@@ -2078,10 +1911,6 @@ def main() -> None:
                     time.sleep(min(max(args.nav_control_dt * 0.25, 0.005), 0.02))
 
                 if not pending_nav.success:
-                    # 2026-05-31 修改：当前 moveTo 仍是“Nav2 高层 + Isaac 刚体平移底盘”的过渡方案，
-                    # Nav2 末段偶尔会返回 status=6（中止/失败），但底盘实际上已经被带到目标附近。
-                    # 若此时直接抛异常，会把整条 move->pick->place 链打断；因此先检查是否已经足够接近目标，
-                    # 接近则接受这次导航并继续后续抓取/放置。
                     nav_bridge.set_active_goal(None)
                     accept_failed_goal = os.environ.get("TAL_NAV_ACCEPT_FAILED_GOAL_IF_CLOSE", "1").lower() in {
                         "1",
@@ -2089,8 +1918,8 @@ def main() -> None:
                         "yes",
                         "on",
                     }
-                    close_pos_tol = max(float(os.environ.get("TAL_NAV_CLOSE_POSITION_TOL_M", "0.18")), 1e-3)
-                    close_yaw_tol = max(float(os.environ.get("TAL_NAV_CLOSE_YAW_TOL_RAD", "0.80")), 1e-3)
+                    close_pos_tol = max(float(os.environ.get("TAL_NAV_CLOSE_POSITION_TOL_M", "0.25")), 1e-3)
+                    close_yaw_tol = max(float(os.environ.get("TAL_NAV_CLOSE_YAW_TOL_RAD", "1.2")), 1e-3)
                     if accept_failed_goal and navigation_goal_is_close_enough(
                         robot_root_controller,
                         nav_goal,

@@ -260,6 +260,7 @@ PYTHONPATH=/root/gpufree-data/code/tal-vla:/root/gpufree-data/code/tal-vla/openp
   2>&1 | tee /tmp/tal_move_debug_0531.log
 
 
+
 1.
 cd /root/gpufree-data/code/tal-vla/robot_ws
 source /opt/ros/jazzy/setup.bash
@@ -267,11 +268,10 @@ colcon build
 
 2.
 cd /root/gpufree-data/code/tal-vla/robot_ws
-
 bash run_nav2_clean.sh
+
 3.
 cd /root/gpufree-data/code/tal-vla/openpi
-
 PYTHONPATH=. .venv/bin/python scripts/serve_policy.py \
   --port 8000 \
   policy:checkpoint \
@@ -320,8 +320,9 @@ TAL_ONLINE_CAMERA_RETRIES=10 \
 TAL_ONLINE_CAMERA_PREFLIGHT_RETRIES=120 \
 TAL_ONLINE_ALLOW_RESET_FALLBACK=1 \
 TAL_ONLINE_WARMUP_DIRECT_SET_JOINTS=1 \
-TAL_NAV_FLATTEN_ROOT_ATTITUDE=1 \
-TAL_NAV_ENFORCE_ROOT_POSE=1 \
+TAL_NAV_ROOT_PRIM_PATH=/World/Mobie_grasper2/firefighter \
+TAL_NAV_FLATTEN_ROOT_ATTITUDE=0 \
+TAL_NAV_ENFORCE_ROOT_POSE=0 \
 TAL_NAV_MAX_TRANSLATION_STEP_M=0.003 \
 TAL_NAV_MAX_YAW_STEP_RAD=0.01 \
 TAL_NAV_ROOT_UPDATE_INTERVAL_S=0.15 \
@@ -329,7 +330,7 @@ TAL_NAV_ACCEPT_FAILED_GOAL_IF_CLOSE=1 \
 TAL_NAV_CLOSE_POSITION_TOL_M=0.25 \
 TAL_NAV_CLOSE_YAW_TOL_RAD=1.2 \
 PYTHONPATH=/root/gpufree-data/code/tal-vla:/root/gpufree-data/code/tal-vla/openpi/packages/openpi-client/src \
-./python.sh /root/gpufree-data/code/tal-vla/sim_inference_tal_controller2.py \
+./python.sh /root/gpufree-data/code/tal-vla/sim_inference_tal_controller4.py \
   --prompt "pick up the cube and put it in pallet" \
   --tal-root /root/gpufree-data/code/tal-vla/TAL2 \
   --server-host 127.0.0.1 \
@@ -337,3 +338,16 @@ PYTHONPATH=/root/gpufree-data/code/tal-vla:/root/gpufree-data/code/tal-vla/openp
   --replan-every-n-steps 300 \
   --nav-server-timeout-sec 45 \
   --nav-goal-timeout-sec 120
+
+#git 指令
+# 1. 确保进入你的代码目录（这一步最重要，防止报“不是 git 仓库”的错误）
+cd ~/gpufree-data/code/tal-vla
+
+# 2. 把刚才上传的视频和所有修改打包
+git add .
+
+# 3. 提交并写备注（双引号里的文字可以随便改，比如写你今天做了什么）
+git commit -m "26-6-7_1"
+
+# 4. 推送到 GitHub（走你之前配好的免密 SSH，直接回车即可）
+git push origin master
