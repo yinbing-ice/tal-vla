@@ -11,7 +11,9 @@ from ultralytics import YOLO
 
 DEFAULT_YOLO_MODEL = "/root/gpufree-data/PRJ/Yolo2/runs/detect/train/weights/best.pt"
 DEFAULT_USD_PATH = "/root/Desktop/Collected_exp3/expff.usd"
-DEFAULT_CAMERA_PATH = "/World/high"
+# 2026-06-08 修改：high 第一人称相机已从 /World/high 移到 /World/Mobie_grasper2/high。
+# 静态感知评估默认使用新的车载 high；仍可通过命令行参数覆盖。
+DEFAULT_CAMERA_PATH = "/World/Mobie_grasper2/high"
 DEFAULT_ROOM_BOUNDS = (-3.76, 2.09, -3.79, -0.153)
 DEFAULT_TABLE_Z = -1.40
 DEFAULT_GROUND_Z = -1.93

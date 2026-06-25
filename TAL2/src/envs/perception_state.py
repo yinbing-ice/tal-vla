@@ -8,7 +8,9 @@ import numpy as np
 # 2026-05-10 修改：将训练数据中的物体坐标从 Isaac 上帝视角改为 YOLO + 相机反投影观测。
 # 机器人本体和已知静态桌子仍使用仿真真值，分别对应真实机器人自定位和已知场景标定。
 DEFAULT_YOLO_MODEL_PATH = "/root/gpufree-data/PRJ/Yolo2/runs/detect/train/weights/best.pt"
-DEFAULT_CAMERA_PATH = "/World/high"
+# 2026-06-08 修改：high 第一人称相机已挂到小车下面，YOLO 反投影默认也读取新的车载相机位姿。
+# 若场景使用其他感知相机，可继续通过 TAL_YOLO_CAMERA_PATH 覆盖。
+DEFAULT_CAMERA_PATH = "/World/Mobie_grasper2/high"
 DEFAULT_TABLE_Z = -1.40
 DEFAULT_GROUND_Z = -1.93
 DEFAULT_ROOM_BOUNDS = (-3.76, 2.09, -3.79, -0.153)

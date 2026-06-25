@@ -81,8 +81,11 @@ args, unknown_args = parser.parse_known_args()
 sys.argv = [sys.argv[0]] + unknown_args
 
 
-CAMERA_HIGH_PATH = "/World/high"
+CAMERA_HIGH_PATH = os.environ.get("TAL_ONLINE_HIGH_CAMERA_PATH", "/World/Mobie_grasper2/high")
 CAMERA_WRIST_PATH = "/World/Mobie_grasper2/firefighter/joint6/wrist"
+# 2026-06-08 修改：high 第一人称相机已从 /World/high 移到 /World/Mobie_grasper2/high。
+# OpenPI/VLA 默认读新的车载 high，相机路径仍可通过 TAL_ONLINE_HIGH_CAMERA_PATH 覆盖；
+# TAL/YOLO 若未单独指定相机，也跟随同一个 high，避免继续访问已不存在的 /World/high。
 CAMERA_TAL_PATH = os.environ.get("TAL_ONLINE_TAL_CAMERA_PATH", os.environ.get("TAL_YOLO_CAMERA_PATH", CAMERA_HIGH_PATH))
 ROBOT_START_WORLD_POSITION = np.array([-0.13648, -1.41058, -1.76984], dtype=np.float32)
 TRAIN_INIT_STATE = np.array(
@@ -953,13 +956,13 @@ def infer_navigation_approach_distance(runtime_ctx: TALRuntimeContext, object_na
         return float(overrides[object_name])
     source = (source_action_name or "").lower()
     if source == "pick":
-        return float(getattr(env_cfg, "pick_approach_distance", getattr(env_cfg, "base_approach_distance", 0.850)))
+        return float(getattr(env_cfg, "pick_approach_distance", getattr(env_cfg, "base_approach_distance", 1.5)))
     if source == "pushto":
-        return float(getattr(env_cfg, "push_approach_distance", getattr(env_cfg, "base_approach_distance", 0.850)))
+        return float(getattr(env_cfg, "push_approach_distance", getattr(env_cfg, "base_approach_distance", 1.5)))
     if source == "picknplaceaonb":
-        return float(getattr(env_cfg, "pick_approach_distance", getattr(env_cfg, "base_approach_distance", 0.850)))
-    return float(getattr(env_cfg, "base_approach_distance", 0.850))
-
+        return float(getattr(env_cfg, "pick_approach_distance", getattr(env_cfg, "base_approach_distance", 1.5)))
+    return float(getattr(env_cfg, "base_approach_distance", 1.5))
+#0.850 1
 
 def infer_navigation_approach_direction(runtime_ctx: TALRuntimeContext, object_name: str, robot_xy: np.ndarray, target_xy: np.ndarray) -> np.ndarray:
     overrides = getattr(runtime_ctx.sim_env_config, "nav_approach_direction_overrides", {})
@@ -987,10 +990,13 @@ def build_navigation_goal(runtime_ctx: TALRuntimeContext, object_name: str, *, s
     stop_distance = infer_navigation_approach_distance(runtime_ctx, resolved_name, source_action_name=source_action_name)
     direction = infer_navigation_approach_direction(runtime_ctx, resolved_name, robot_xy, target_xy)
     goal_xy = target_xy + direction * stop_distance
-    occupancy_map = load_nav_occupancy_map(NAV_MAP_YAML_PATH)
-    footprint = getattr(runtime_ctx.sim_env_config, "lidar_footprint_overrides", {}).get(resolved_name, [0.24, 0.24])
-    clearance_m = max(float(footprint[0]), float(footprint[1]), 0.24) * 0.5 + 0.06
-    goal_x, goal_y = project_nav_goal_to_free_space(occupancy_map, float(goal_xy[0]), float(goal_xy[1]), clearance_m=clearance_m)
+    # occupancy_map = load_nav_occupancy_map(NAV_MAP_YAML_PATH)
+    # footprint = getattr(runtime_ctx.sim_env_config, "lidar_footprint_overrides", {}).get(resolved_name, [0.24, 0.24])
+    # clearance_m = max(float(footprint[0]), float(footprint[1]), 0.24) * 0.5 + 0.06
+    # goal_x, goal_y = project_nav_goal_to_free_space(occupancy_map, float(goal_xy[0]), float(goal_xy[1]), clearance_m=clearance_m)
+    # 🔥 强制使用我们自己算出来的坐标
+    goal_x = float(goal_xy[0])
+    goal_y = float(goal_xy[1])
     yaw = math.atan2(float(target_xy[1] - goal_y), float(target_xy[0] - goal_x))
     return NavigationGoal(x=float(goal_x), y=float(goal_y), yaw=float(yaw))
 
@@ -1934,18 +1940,55 @@ def main() -> None:
                     else:
                         raise RuntimeError(pending_nav.error or f"Nav2 navigation failed with status={pending_nav.status}")
 
+                # print(f"[Step {step_idx}] Nav2 goal reached successfully.", flush=True)
+                # # nav_bridge.settle_to_goal_pose(nav_goal)
+                # nav_bridge.set_active_goal(None)
+                # completed_navigation_subtasks.add((latest_parsed_subtask.name.lower(), tuple(latest_parsed_subtask.args)))
+                # if isinstance(derived_from, Mapping):
+                #     latest_subtask = None
+                #     latest_fused_prompt = args.prompt
+                #     skip_replan_once = True
+                #     force_replan = False
+                # else:
+                #     force_replan = True
+                # latest_parsed_subtask = None
+                # step_idx += 1
+                # continue
+                #print(f"[Step {step_idx}] Nav2 goal reached successfully.", flush=True)
                 print(f"[Step {step_idx}] Nav2 goal reached successfully.", flush=True)
-                nav_bridge.settle_to_goal_pose(nav_goal)
+                
+                # # ---------------------------------------------------------
+                # # 🔥 终极防爆 + 驻车制动 (拉手刹)
+                # # 1. 绝不强行 settle_to_goal_pose 瞬移到桌子里
+                # # 2. 读取当前真实的安全物理位置，并原地锁死底盘 (防止溜车)
+                # nav_bridge.set_active_goal(None)
+                # nav_bridge.sync_from_current_root()  # <--- 这句就是“原地拉手刹”！
+                # # ---------------------------------------------------------
+                
+                # completed_navigation_subtasks.add((latest_parsed_subtask.name.lower(), tuple(latest_parsed_subtask.args)))
+                
+                # # 🔥 强制 TAL 立即重新规划，切换到大模型的抓取阶段
+                # force_replan = True
+                # skip_replan_once = False
+                # latest_subtask = None
+                # latest_parsed_subtask = None
+                
+                # step_idx += 1
+                # continue
+
+                # 🔥 绝杀一：不强行瞬移，并且彻底释放底盘，让物理引擎恢复自由！
+                # nav_bridge.settle_to_goal_pose(nav_goal)
                 nav_bridge.set_active_goal(None)
+                nav_bridge._idle_root_hold_enabled = False  # <--- 这一句救车命！
+
                 completed_navigation_subtasks.add((latest_parsed_subtask.name.lower(), tuple(latest_parsed_subtask.args)))
-                if isinstance(derived_from, Mapping):
-                    latest_subtask = None
-                    latest_fused_prompt = args.prompt
-                    skip_replan_once = True
-                    force_replan = False
-                else:
-                    force_replan = True
+
+                # 🔥 绝杀二：强制 TAL 立即重新规划！把“抓取(pick)”指令送给大模型！
+                force_replan = True
+                skip_replan_once = False
+                latest_subtask = None
                 latest_parsed_subtask = None
+
                 step_idx += 1
                 continue
 

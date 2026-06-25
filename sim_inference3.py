@@ -44,7 +44,7 @@ robot_prim_path = "/World/Mobie_grasper2"
 cube_prim_path = "/World/Cube"
 # plate_path = "/World/plate"
 MATERIAL_PRIM_PATH = "/World/PhysicsMaterial" 
-CAMERA_HIGH_PATH = "/World/high"
+CAMERA_HIGH_PATH = os.environ.get("TAL_ONLINE_HIGH_CAMERA_PATH", "/World/Mobie_grasper2/high")
 CAMERA_WRIST_PATH = "/World/Mobie_grasper2/firefighter/joint6/wrist"
 
 

@@ -29,6 +29,21 @@ TAL_EXPLORE_SKIP_PICKNPLACE=0 \
 TAL_EXPLORE_SKIP_PUSHTO=0 \
 /root/isaaclab/_isaac_sim/python.sh src/exploration.py
 
+cd /root/gpufree-data/code/tal-vla/TAL2
+
+TAL_ISAAC_SKIP_SIM_STEP=1 \
+TAL_ISAAC_HEADLESS=0 \
+TAL_ISAAC_LOGICAL_ROBOT_MOTION=1 \
+TAL_ISAAC_SHOW_LOGICAL_ROBOT_MARKER=1 \
+TAL_PERCEPTION_MODE=yolo \
+TAL_YOLO_CAMERA_PATH=/World/high2 \
+TAL_YOLO_WARMUP_STEPS=1 \
+TAL_YOLO_CONF=0.35 \
+TAL_EXPLORE_SKIP_PICK=0 \
+TAL_EXPLORE_SKIP_PICKNPLACE=0 \
+TAL_EXPLORE_SKIP_PUSHTO=0 \
+/root/isaaclab/_isaac_sim/python.sh src/exploration.py
+
 Notes:
 - The Isaac Lab environment now loads `/root/Desktop/Collected_exp3/expff.usd`.
 - The active scene objects are `Cube`, `SmallPallet`, `BigPallet`, `Bottle2`, `Stool`, `table`, and `Mobie_grasper2`.
@@ -47,6 +62,9 @@ Notes:
 ```shell
 /root/isaaclab/_isaac_sim/python.sh src/generate_and_split_dataset.py
 ```
+cd /root/gpufree-data/code/tal-vla/TAL2
+TAL_DATASET_GRAPH_FILE=17.graph \
+/root/isaaclab/_isaac_sim/python.sh src/generate_and_split_dataset.py
 
 3. Train action effect feature extractor.
 
@@ -54,8 +72,7 @@ Notes:
 /root/isaaclab/_isaac_sim/python.sh scripts/train_feature_extractor.py
 ```
 cd /root/gpufree-data/code/tal-vla/TAL2
-
-TAL_AFE_GRAPH_FILE=11.graph \
+TAL_AFE_GRAPH_FILE=17.graph \
 /root/isaaclab/_isaac_sim/python.sh scripts/train_feature_extractor.py
 TAL_AFE_FRESH_START=1 
 4. Extract action effect features.
@@ -64,8 +81,7 @@ TAL_AFE_FRESH_START=1
 /root/isaaclab/_isaac_sim/python.sh scripts/generate_action_effect_features.py
 ```
 cd /root/gpufree-data/code/tal-vla/TAL2
-
-TAL_AFE_GRAPH_FILE=11.graph \
+TAL_AFE_GRAPH_FILE=17.graph \
 /root/isaaclab/_isaac_sim/python.sh scripts/generate_action_effect_features.py
 
 5. Train action proposal (BC)
@@ -74,9 +90,7 @@ TAL_AFE_GRAPH_FILE=11.graph \
 /root/isaaclab/_isaac_sim/python.sh scripts/train_action_proposal.py
 ```
 cd /root/gpufree-data/code/tal-vla/TAL2
-
-TAL_APN_GRAPH_FILE=11.graph \
-
+TAL_APN_GRAPH_FILE=17.graph \
 TAL_APN_NUM_WORKERS=0 \
 TAL_APN_PIN_MEMORY=0 \
 /root/isaaclab/_isaac_sim/python.sh scripts/train_action_proposal.py
@@ -163,6 +177,9 @@ sk-0ad1057b021b4dd3b660a161f1835850
 cd /isaac-sim
 
 TAL_PERCEPTION_MODE=yolo \
+TAL_ONLINE_HIGH_CAMERA_PATH=/World/Mobie_grasper2/high \
+TAL_ONLINE_TAL_CAMERA_PATH=/World/Mobie_grasper2/high \
+TAL_YOLO_CAMERA_PATH=/World/Mobie_grasper2/high \
 TAL_YOLO_CAPTURE_MODE=live_camera \
 TAL_YOLO_WARMUP_STEPS=1 \
 TAL_YOLO_CONF=0.35 \
@@ -214,6 +231,9 @@ export DASHSCOPE_API_KEY=sk-0ad1057b021b4dd3b660a161f1835850
 cd /isaac-sim
 
 TAL_PERCEPTION_MODE=yolo \
+TAL_ONLINE_HIGH_CAMERA_PATH=/World/Mobie_grasper2/high \
+TAL_ONLINE_TAL_CAMERA_PATH=/World/Mobie_grasper2/high \
+TAL_YOLO_CAMERA_PATH=/World/Mobie_grasper2/high \
 TAL_YOLO_CAPTURE_MODE=live_camera \
 TAL_YOLO_WARMUP_STEPS=1 \
 TAL_YOLO_CONF=0.35 \
@@ -239,6 +259,9 @@ export DASHSCOPE_API_KEY=sk-0ad1057b021b4dd3b660a161f1835850
 cd /isaac-sim
 
 TAL_PERCEPTION_MODE=yolo \
+TAL_ONLINE_HIGH_CAMERA_PATH=/World/Mobie_grasper2/high \
+TAL_ONLINE_TAL_CAMERA_PATH=/World/Mobie_grasper2/high \
+TAL_YOLO_CAMERA_PATH=/World/Mobie_grasper2/high \
 TAL_YOLO_CAPTURE_MODE=live_camera \
 TAL_YOLO_WARMUP_STEPS=1 \
 TAL_YOLO_CONF=0.35 \
@@ -284,6 +307,9 @@ export DASHSCOPE_API_KEY=sk-0ad1057b021b4dd3b660a161f1835850
 cd /isaac-sim
 
 TAL_PERCEPTION_MODE=yolo \
+TAL_ONLINE_HIGH_CAMERA_PATH=/World/Mobie_grasper2/high \
+TAL_ONLINE_TAL_CAMERA_PATH=/World/Mobie_grasper2/high \
+TAL_YOLO_CAMERA_PATH=/World/Mobie_grasper2/high \
 TAL_YOLO_CAPTURE_MODE=live_camera \
 TAL_YOLO_WARMUP_STEPS=1 \
 TAL_YOLO_CONF=0.35 \
@@ -320,6 +346,9 @@ TAL_ONLINE_CAMERA_RETRIES=10 \
 TAL_ONLINE_CAMERA_PREFLIGHT_RETRIES=120 \
 TAL_ONLINE_ALLOW_RESET_FALLBACK=1 \
 TAL_ONLINE_WARMUP_DIRECT_SET_JOINTS=1 \
+TAL_ONLINE_HIGH_CAMERA_PATH=/World/Mobie_grasper2/high \
+TAL_ONLINE_TAL_CAMERA_PATH=/World/Mobie_grasper2/high \
+TAL_YOLO_CAMERA_PATH=/World/Mobie_grasper2/high \
 TAL_NAV_ROOT_PRIM_PATH=/World/Mobie_grasper2/firefighter \
 TAL_NAV_FLATTEN_ROOT_ATTITUDE=0 \
 TAL_NAV_ENFORCE_ROOT_POSE=0 \
@@ -329,6 +358,7 @@ TAL_NAV_ROOT_UPDATE_INTERVAL_S=0.15 \
 TAL_NAV_ACCEPT_FAILED_GOAL_IF_CLOSE=1 \
 TAL_NAV_CLOSE_POSITION_TOL_M=0.25 \
 TAL_NAV_CLOSE_YAW_TOL_RAD=1.2 \
+TAL_ONLINE_DIRECT_SET_JOINTS=1 \
 PYTHONPATH=/root/gpufree-data/code/tal-vla:/root/gpufree-data/code/tal-vla/openpi/packages/openpi-client/src \
 ./python.sh /root/gpufree-data/code/tal-vla/sim_inference_tal_controller4.py \
   --prompt "pick up the cube and put it in pallet" \
@@ -338,6 +368,8 @@ PYTHONPATH=/root/gpufree-data/code/tal-vla:/root/gpufree-data/code/tal-vla/openp
   --replan-every-n-steps 300 \
   --nav-server-timeout-sec 45 \
   --nav-goal-timeout-sec 120
+
+
 
 #git 指令
 # 1. 确保进入你的代码目录（这一步最重要，防止报“不是 git 仓库”的错误）

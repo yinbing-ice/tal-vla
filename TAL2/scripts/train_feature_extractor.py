@@ -401,7 +401,7 @@ if __name__ == '__main__':
     args = init_args()
     args.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     args.model_name = 'AFE'
-    args.num_epochs = 1045  ##修改轮数
+    args.num_epochs = 566  ##修改轮数
     config = EnvironmentConfig(args)
 
     train_data_path = './data/train_dataset.pkl'

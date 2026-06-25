@@ -81,10 +81,11 @@ args, unknown_args = parser.parse_known_args()
 sys.argv = [sys.argv[0]] + unknown_args
 
 
-CAMERA_HIGH_PATH = "/World/high"
+CAMERA_HIGH_PATH = os.environ.get("TAL_ONLINE_HIGH_CAMERA_PATH", "/World/Mobie_grasper2/high")
 CAMERA_WRIST_PATH = "/World/Mobie_grasper2/firefighter/joint6/wrist"
 # 2026-05-24 修改：在线闭环里把 OpenPI 低层控制相机和 TAL 高层规划相机解耦。
-# 默认仍保持 TAL 使用 high；如果场景里新增了 /World/high2，可通过 TAL_ONLINE_TAL_CAMERA_PATH=/World/high2 单独给 TAL/YOLO 使用。
+# 2026-06-08 修改：high 第一人称相机已从 /World/high 移到 /World/Mobie_grasper2/high。
+# OpenPI/VLA 默认读新的车载 high；如果后续要给 TAL/YOLO 单独相机，仍可设置 TAL_ONLINE_TAL_CAMERA_PATH。
 CAMERA_TAL_PATH = os.environ.get("TAL_ONLINE_TAL_CAMERA_PATH", os.environ.get("TAL_YOLO_CAMERA_PATH", CAMERA_HIGH_PATH))
 ROBOT_START_WORLD_POSITION = np.array([-0.13648, -1.41058, -1.76984], dtype=np.float32)
 TRAIN_INIT_STATE = np.array(

@@ -81,8 +81,10 @@ args, unknown_args = parser.parse_known_args()
 sys.argv = [sys.argv[0]] + unknown_args
 
 
-CAMERA_HIGH_PATH = "/World/high"
+CAMERA_HIGH_PATH = os.environ.get("TAL_ONLINE_HIGH_CAMERA_PATH", "/World/Mobie_grasper2/high")
 CAMERA_WRIST_PATH = "/World/Mobie_grasper2/firefighter/joint6/wrist"
+# 2026-06-08 修改：high 第一人称相机已从 /World/high 移到 /World/Mobie_grasper2/high。
+# OpenPI/VLA 默认读新的车载 high；TAL/YOLO 未单独指定时也复用这一路。
 CAMERA_TAL_PATH = os.environ.get("TAL_ONLINE_TAL_CAMERA_PATH", os.environ.get("TAL_YOLO_CAMERA_PATH", CAMERA_HIGH_PATH))
 ROBOT_START_WORLD_POSITION = np.array([-0.13648, -1.41058, -1.76984], dtype=np.float32)
 TRAIN_INIT_STATE = np.array(
