@@ -379,7 +379,11 @@ cd ~/gpufree-data/code/tal-vla
 git add .
 
 # 3. 提交并写备注（双引号里的文字可以随便改，比如写你今天做了什么）
-git commit -m "26-6-7_1"
+git commit -m "26-6-28_1_win11"
 
 # 4. 推送到 GitHub（走你之前配好的免密 SSH，直接回车即可）
 git push origin master
+
+
+# 在本地端拉取
+git pull
